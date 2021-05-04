@@ -1,0 +1,59 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+% Using Diaz essay LaTeX template from:
+% http://www.LaTeXTemplates.com
+%
+% Authors:
+% Vel (vel@LaTeXTemplates.com)
+% Nicolas Diaz (nsdiaz@uc.cl)
+%
+% License:
+% CC BY-NC-SA 3.0 (http://creativecommons.org/licenses/by-nc-sa/3.0/)
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% PACKAGES AND OTHER DOCUMENT CONFIGURATIONS
+\documentclass[11pt]{diazessay} % Font size (can be 10pt, 11pt or 12pt)
+
+% TITLE SECTION
+\title{\textbf{Diving into Linux Perf Ring Buffer}}
+\author{\textbf{Leo Yan} \\ \textit{leo.yan@linaro.org}} % Author and institution
+\date{\today} % Date, use \date{} for no date
+
+%----------------------------------------------------------------------------------------
+
+\begin{document}
+
+\maketitle % Print the title section
+
+% ABSTRACT AND KEYWORDS
+
+\begin{abstract}
+Linux perf ring buffer is critical, except which is used to transfer for the events data, it's also a fundamental mechanism for hardware trace data recording (Like Intel PT, Arm CoreSight, etc).  Therefore, the ring buffer implementation is very challenge, it is required to provide high throughput, but also should avoid causing any significant overload by the buffer's management.
+
+The purpose of this article is to provide a material if anyone wants to understand the internal of pref ring buffer, it dives into the details for the perf ring buffer implementation, and explains how the ring buffer is applicated with connecting the flows in practice.
+\end{abstract}
+
+\hspace*{3.6mm}\textit{Keywords:} Linux, perf, ring buffer, throughput % Keywords
+\vspace{30pt} % Vertical whitespace between the abstract and first section
+
+% ESSAY BODY
+
+\section*{Introduction}
+
+Perf tool is a main stream profiling tool which is widely used in Linux community.  At the early time, it was originally designed to support CPU PMU events, like CPU cycles, cache access and misses events, etc; afterwards, it was extended to support timers, software events (E.g. Ftrace tracepoints).  Nowdays, it has integrated with the hardware trace and even can co-work with eBPF tracing.
+
+To support all of these kind events, especially if developers want to record multiple events in one go, the ring buffer is used for event recording in the kernel, and perf tool can directly read events from the ring buffer and store records into data file.  The throughput is a big challenge in the implementation, particularly, it would be very interesting to know how the buffer is synchronized between user space and kernel, and how to support SMP if the buffer is shared by multiple CPUs.
+
+This article tries to dive into the ring buffer's implemenation and give out answers to cate my curiosity.  The content is arranged as below:
+\begin{itemize}
+	\item The introduction for basic algorithm of the ring buffer;
+	\item The mechanim for AUX ring buffer;
+	\item At last, using Arm CoreSight as an example to explain how the ring buffer works with hardware trace.
+\end{itemize}
+
+\section*{Basic algorithm}
+
+As we studied in the textbook, the ring buffer should be managed by a head pointer and a tail pointer; the head pointer is manipulated by a writer and the tail pointer is updated by a reader respectively.
+
+\end{document}
