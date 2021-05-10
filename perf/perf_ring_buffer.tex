@@ -18,6 +18,7 @@
 \usepackage{listings}
 \usepackage{tikz}
 \usetikzlibrary{positioning}
+\usetikzlibrary{arrows}
 
 \lstset{frame=tb,
   language=C,
@@ -29,7 +30,7 @@
   numbers=none,
   numberstyle=\tiny\color{gray},
   keywordstyle=\color{blue},
-  commentstyle=\color{dkgreen},
+  commentstyle=\color{black},
   stringstyle=\color{mauve},
   breaklines=false,
   breakatwhitespace=false,
@@ -405,7 +406,7 @@ There have many occasions for generating samples: PMU interrupt handler when det
 
 Note, perf sleeps on the wait queue of the events rather than wait on the ring buffer; the ring buffer itself doesn't provide wait queue.  But the event core layer in kernel is not only to wake up the sleeping tasks based on the event, on the other hand, it wakes up tasks based on the whole ring buffer.
 
-Because multiple events share the same ring buffer for sampling, when any event sample is recorded into the ring buffer, the kernel event core layer simply wakes up sleeping tasks related to the ring buffer.  This is fulfilled by the kernel function \code{ring\_buffer\_wakeup()} which iterates every event associated to the ring buffer and wakes up tasks on the wait queue of the events.
+Because multiple events share the same ring buffer for recording samples, when any event sample is stored into the ring buffer, the kernel event core layer simply wakes up sleeping tasks relevant to the ring buffer.  This is fulfilled by the kernel function \code{ring\_buffer\_wakeup()} which iterates every event associated to the ring buffer and wakes up tasks on the wait queue of the events.
 
 \begin{lstlisting}
 static void ring_buffer_wakeup(struct perf_event *event)
@@ -421,5 +422,86 @@ static void ring_buffer_wakeup(struct perf_event *event)
 	rcu_read_unlock();
 }
 \end{lstlisting}
+
+Perf works as a standalone process; and after its process is waken up, it starts to check the ring buffers one by one, if finds any ring buffer contains samples it will read out the samples for statistics.
+
+We can get to know that the perf process is possible to run on any CPUs, this leads to the ring buffer can be accessed from multiple CPUs simultaneously, which causes race conditions and should be handled properly.  The details for handling race condition will be depicted later.
+
+\subsubsection*{Writing samples into buffer}
+
+When an event couter is overflow, a sample will be taken and saved into the ring buffer; the function \code{\_\_perf\_event\_output()} is used to fill samples into the ring buffer.
+
+\begin{lstlisting}[escapechar = !]
+static __always_inline int
+__perf_event_output(struct perf_event *event,
+                    struct perf_sample_data *data,
+                    struct pt_regs *regs,
+                    int (*output_begin)(struct perf_output_handle *,
+                                        struct perf_sample_data *,
+                                        struct perf_event *,
+                                        unsigned int))
+{
+        struct perf_output_handle handle;
+        struct perf_event_header header;
+        int err;
+
+        /* protect the callchain buffers */
+        rcu_read_lock();
+
+        perf_prepare_sample(&header, data, event, regs);
+
+        err = output_begin(&handle, data, event, header.size);
+        if (err)
+                goto exit;
+
+        perf_output_sample(&handle, &header, data, event);
+
+        perf_output_end(&handle);
+
+exit:
+        rcu_read_unlock();
+        return err;
+}
+\end{lstlisting}
+
+These main functions are called for outputting a sample:
+\begin{itemize}
+	\item As its name indicates, the function \code{perf\_prepare\_sample()} prepares sample fields based on the sample type;
+	\item \code{output\_begin()} is a function pointer, it's passed dynamically via the argument for different writing direction, its purpose is to prepare the info for writing ring buffer, when return back the ring buffer info is stored in structure \code{perf\_output\_handle};
+	\item \code{perf\_output\_sample()} outputs the sample fields into the ring buffer;
+	\item \code{perf\_output\_end()} updates the head pointer for user page so perf tool can see the latest value.
+\end{itemize}
+
+Let's look into \code{output\_begin()}.  Since the ring buffer supports two directions for writing: backward or forward, thus this function pointer is assigned according to the buffer's writing type, it can be \code{perf\_output\_begin\_forward()} or \code{...\_backward()} variant.
+
+For the backward ring buffer due to the user page is mapped without \code{'PROT\_WRITE'}, the tool in user space has no chance to update tail pointer, therefore, this case uses only head pointer and doesn't use the tail pointer.  For the backward ring buffer, the head pointer points to the start of a sample, perf tool can read out the samples one by one based on sample's event size.
+
+Alternatively, the forward ring buffer uses both head pointer and tail pointer for the buffer management, which is more often used in perf tool and matches the description in the section "Basic algorithm".  To simplify the description, below uses the forward type of ring buffer to explain how to write samples.
+
+\begin{center}
+\par
+\begin{tikzpicture}[>=latex,font=\sffamily,semithick,scale=1.75]
+	\node [minimum width=5cm,minimum height=2em,outer sep=0pt,draw=black,fill=gray!20] at (0,0) (oh) {\code{\small struct perf\_output\_handle}};
+	\node [minimum width=5cm,minimum height=2em,outer sep=0pt,draw=black,fill=white,below=0cm of oh] (oh_rb) {\code{\small *rb;}};
+	\node [minimum width=5cm,minimum height=2em,outer sep=0pt,draw=black,fill=white,below=0cm of oh_rb] (oh_page) {\code{\small int page;}};
+	\node [minimum width=5cm,minimum height=2em,outer sep=0pt,draw=black,fill=white,below=0cm of oh_page] (oh_addr) {\code{\small void *addr;}};
+	\node [minimum width=5cm,minimum height=2em,outer sep=0pt,draw=black,fill=white,below=0cm of oh_addr] (oh_size) {\code{\small unsigned long size;}};
+
+	\node [minimum width=5cm,minimum height=2em,outer sep=0pt,draw=black,fill=gray!20,right=2cm of oh.east] (buf) {\code{\small struct perf\_buffer}};
+	\node [minimum width=5cm,minimum height=2em,outer sep=0pt,draw=black,fill=white,below=0cm of buf] (buf_head) {\code{\small local\_t head;}};
+	\node [minimum width=5cm,minimum height=2em,outer sep=0pt,draw=black,fill=white,below=0cm of buf_head] (buf_user_page) {\code{\small *user\_page;}};
+
+	\node [minimum width=5.5cm,minimum height=2em,outer sep=0pt,draw=black,fill=gray!20,below=1cm of buf_user_page] (up) {\code{\small struct perf\_event\_mmap\_page}};
+	\node [minimum width=5.5cm,minimum height=2em,outer sep=0pt,draw=black,fill=white,below=0cm of up] (up_head) {\code{\small \_\_u64 data\_head;}};
+	\node [minimum width=5.5cm,minimum height=2em,outer sep=0pt,draw=black,fill=white,below=0cm of up_head] (up_tail) {\code{\small \_\_u64 data\_tail;}};
+
+	\draw [->,semithick] (oh_rb.east) -- +(1em,0em) |- (buf.west);
+	\draw [->,semithick] (buf_user_page.south) -- (up.north);
+	\draw[->,dotted] (buf_head.east) to[bend left=50] node[midway] {perf\_output\_end()} (up_head.east);
+	\draw[->,dotted] (buf_head.west) -- +(-1.5em,0em) |- node[midway,right] {output\_begin()} (oh_addr.east);
+\end{tikzpicture}
+\par
+\textbf{Figure 7: Structures for writing ring buffer}
+\end{center}
 
 \end{document}
