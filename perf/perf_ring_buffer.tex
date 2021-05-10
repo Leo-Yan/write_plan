@@ -504,4 +504,48 @@ Alternatively, the forward ring buffer uses both head pointer and tail pointer f
 \textbf{Figure 7: Structures for writing ring buffer}
 \end{center}
 
+The event core layer in kernel uses the structure \code{perf\_buffer} to track the buffer's latest header, and it keeps the information for buffer pages.  If considering the life cycle, the structure \code{perf\_buffer} is allocated once the ring buffer is created, and it's released when the ring buffer is destroyed.
+
+It's possible that multiple events to write buffer concurrently.  For instance, one software event and one hardware PMU event both are enabled for profiling, when the software event is in the middle of sampling, the hardware event maybe overflow and its interrupt is triggered in this case.  This leads to the race condition for \code{perf\_buffer::head}, because the software event sampling can be interrupted by the hardware event sampling.
+
+Linux kernel uses compare-and-swap atomicity \code{local\_cmpxchg()} to implement the locklesss mechanism for protecting \code{perf\_buffer::head} (copied from \code{\_\_perf\_output\_begin()}):
+
+\begin{lstlisting}
+do {
+        tail = READ_ONCE(rb->user_page->data_tail);
+        offset = head = local_read(&rb->head);
+        if (!rb->overwrite) {
+                if (unlikely(!ring_buffer_has_space(head, tail,
+                                                    perf_data_size(rb),
+                                                    size, backward)))
+                        goto fail;
+        }
+
+        /*
+         * The above forms a control dependency barrier separating the
+         * @tail load above from the data stores below. Since the @tail
+         * load is required to compute the branch to fail below.
+         *
+         * A, matches D; the full memory barrier userspace SHOULD issue
+         * after reading the data and before storing the new tail
+         * position.
+         *
+         * See perf_output_put_handle().
+         */
+
+        if (!backward)
+                head += size;
+        else
+                head -= size;
+} while (local_cmpxchg(&rb->head, offset, head) != offset);
+\end{lstlisting}
+
+Comparing to \code{perf\_buffer}, the structure \code{perf\_output\_handle} is only used during the event sampling.  When an event is overflow, it firstly uses the structure \code{perf\_output\_handle} to establish a context for buffer's accessing, afterwards, sampling only uses the field \code{perf\_output\_handle::addr} as the destination address for copying sample data. 
+
+A significant benefit from the structure \code{perf\_output\_handle} is it allows different events to write buffer concurrently.  The stucture \code{perf\_output\_handle} maintains two contexts for the software event and hardware event separately, thus every event reserves its own memory space in the function \code{out\_begin()} and \code{perf\_output\_handle::addr} is used for filling samples.
+
+Until the sample data has been stored into buffer, the ring buffer's header is synced from \code{perf\_buffer::head} to \code{perf\_event\_mmap\_page::data\_head} in the function \code{perf\_output\_end()}.  This delivers the message to the perf tool that "now you are safe to read out the new samples from the user space".
+
+\subsubsection*{Reading samples from buffer}
+
 \end{document}
