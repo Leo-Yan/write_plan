@@ -31,7 +31,7 @@
   numberstyle=\tiny\color{gray},
   keywordstyle=\color{blue},
   commentstyle=\color{black},
-  stringstyle=\color{mauve},
+  %stringstyle=\color{mauve},
   breaklines=false,
   breakatwhitespace=false,
   tabsize=3
@@ -547,5 +547,84 @@ A significant benefit from the structure \code{perf\_output\_handle} is it allow
 Until the sample data has been stored into buffer, the ring buffer's header is synced from \code{perf\_buffer::head} to \code{perf\_event\_mmap\_page::data\_head} in the function \code{perf\_output\_end()}.  This delivers the message to the perf tool that "now you are safe to read out the new samples from the user space".
 
 \subsubsection*{Reading samples from buffer}
+
+Like kernel's \code{perf\_output\_handle}, the structure \code{perf\_mmap} maintains a context for ring buffer in the user space, the context contains the info for buffer's start address, end address and mask; these values can be used to calculate the buffer pointer and size to be read based on different buffer modes.
+
+The pointers and buffer are different data objects, it's possible for out-of-order accessing to them on the modern CPUs with relaxed memory model.  Furthermore, given perf and the profiled program running in multi-threads on multiple CPUs, the sequence between accessing pointers and buffer data must be promised by memory synchronization.
+
+Besides the kernel function \code{perf\_output\_put\_handle()}, two helpers\\\code{ring\_buffer\_read\_head()} and \code{ring\_buffer\_write\_tail()} are introduced with memory barriers in the user space, they cooperates to ensure the data dependency; the rationale for the memory synchronization is:
+
+\begin{tabular}{|l|l|}
+\begin{minipage}{.4\textwidth}
+\begin{lstlisting}[
+tabsize=2,
+numbersep=8pt,
+numbers=left,
+xleftmargin=0.5cm,frame=tlbr,framesep=2pt,framerule=0pt,
+morekeywords ={class,run}
+]
+Kernel
+
+if (LOAD ->data_tail) {
+                   (A)
+   STORE $data
+   smp_wmb()       (B)
+   STORE ->data_head
+}
+\end{lstlisting}
+\end{minipage}
+
+&
+
+\begin{minipage}{.4\textwidth}
+\begin{lstlisting}[
+tabsize=2,
+numbersep=8pt,
+numbers=left,
+xleftmargin=0.5cm,frame=tlbr,framesep=2pt,framerule=0pt,
+aboveskip=-1.4\medskipamount,
+morekeywords ={class,run}
+]
+User space
+
+LOAD ->data_head
+smp_rmb()       (C)
+LOAD $data
+smp_mb()        (D)
+STORE ->data_tail
+\end{lstlisting}
+\end{minipage}
+\end{tabular}
+
+The comment in source file \code{include/linux/ring\_buffer.h} gives very nice description, here just tried to give explaination in my own words.
+
+\code{(A)} indicates a control dependency between checking pointer \code{data\_tail} and filling sample, so that the kernel has chance to decide if the buffer has enough free space or not.  \code{(D)} needs to separate the ring buffer data reading from writing the pointer \code{data\_tail}, perf tool firstly reads samples and then tells kernel that samples have been consumed and it can safely use it from then on.  Since one of these two operations is reading and another is writing, thus it needs a full memory barrier.  \code{(B)} is a writing barrier in the middle of two writing operations, which makes sure the head pointer updating must be later than finishing current sampling.  \code{(C)} is a read memory barrier to split two read operations, it promises the program sequence for fetching the latest head pointer prior to reading samples.
+
+Some architectures support one-way permeable barrier, such like load-acquire and store-release barriers are more relax to impose the barrier on any irrelevant memory operations, so \code{(C)} and \code{(D)} can be optimized to use barriers \code{smp\_load\_acquire()} and \code{smp\_store\_release()} respectively.
+
+\begin{lstlisting}
+static inline u64 ring_buffer_read_head(struct perf_event_mmap_page *base)
+{
+/*
+ * Architectures where smp_load_acquire() does not fallback to
+ * READ_ONCE() + smp_mb() pair.
+ */
+#if defined(__x86_64__) || defined(__aarch64__) || defined(__powerpc64__) || \
+    defined(__ia64__) || defined(__sparc__) && defined(__arch64__)
+        return smp_load_acquire(&base->data_head);
+#else
+        u64 head = READ_ONCE(base->data_head);
+
+        smp_rmb();
+        return head;
+#endif
+}
+
+static inline void ring_buffer_write_tail(struct perf_event_mmap_page *base,
+                                          u64 tail)
+{
+        smp_store_release(&base->data_tail, tail);
+}
+\end{lstlisting}
 
 \end{document}
