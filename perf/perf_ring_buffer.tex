@@ -102,7 +102,7 @@ The throughput is a big challenge in the implementation, particularly, from the 
 In the sequential sections, the content is arranged as:
 \begin{itemize}
 	\item The introduction for basic algorithm of the ring buffer;
-	\item The mechanim for AUX ring buffer;
+	\item The mechanism for AUX ring buffer;
 	\item At last, using Arm CoreSight as an example to explain how the ring buffer works with hardware trace.
 \end{itemize}
 
@@ -600,8 +600,6 @@ The comment in source file \code{include/linux/ring\_buffer.h} gives very nice d
 
 \code{(A)} indicates a control dependency between checking pointer \code{data\_tail} and filling sample, so that the kernel has chance to decide if the buffer has enough free space or not.  \code{(D)} needs to separate the ring buffer data reading from writing the pointer \code{data\_tail}, perf tool firstly reads samples and then tells kernel that samples have been consumed and it can safely use it from then on.  Since one of these two operations is reading and another is writing, thus it needs a full memory barrier.  \code{(B)} is a writing barrier in the middle of two writing operations, which makes sure the head pointer updating must be later than finishing current sampling.  \code{(C)} is a read memory barrier to split two read operations, it promises the program sequence for fetching the latest head pointer prior to reading samples.
 
-Some architectures support one-way permeable barrier, such like load-acquire and store-release barriers are more relax to impose the barrier on any irrelevant memory operations, so \code{(C)} and \code{(D)} can be optimized to use barriers \code{smp\_load\_acquire()} and \code{smp\_store\_release()} respectively.
-
 \begin{lstlisting}
 static inline u64 ring_buffer_read_head(struct perf_event_mmap_page *base)
 {
@@ -626,5 +624,142 @@ static inline void ring_buffer_write_tail(struct perf_event_mmap_page *base,
         smp_store_release(&base->data_tail, tail);
 }
 \end{lstlisting}
+
+Some architectures support one-way permeable barrier with load-acquire and store-release operations, these barriers are more relax to impose the barrier on any irrelevant memory operations, so \code{(C)} and \code{(D)} can be optimized to use barriers \code{smp\_load\_acquire()} and \code{smp\_store\_release()} respectively.
+
+If an architecture doesn't support load-acquire and store-release, it will rollback to the old fashion with common memory barriers.  A minor improvement should be mentioned, as shown in \code{ring\_buffer\_read\_head()}, if an architecture doesn't support load-acquire primitive, it doesn't simply fallback to \code{READ\_ONCE() + smp\_mb()} encapsulated in \code{smp\_load\_acquire()}, the reason is it wants to benefit the performance by using a more lightweight barrier \code{smp\_rmb()} rather than \code{smp\_mb()}.
+
+\section*{The mechanism for AUX ring buffer}
+
+This chapter will examine the implementation for AUX ring buffer.  It firstly concludes the relationship between the AUX ring buffer and the generic ring buffer;  then it reviews how the AUX ring buffer co-work with the generic ring buffer, and what's the extension introduced by the AUX ring buffer for the sampling mechanism.
+
+\subsection*{The relationship with the generic ring buffer}
+
+In an overview, the AUX ring buffer is an auxiliary for the generic ring buffer.  The generic ring buffer is primarily used to store the event samples, and every event fromat complies with the definition in the union \code{perf\_event}; the AUX ring buffer is for recording the hardware tracing, and the trace data format is hardware IP dependent.  The advantage of introducing AUX ring buffer is it can de-couple the data transferring between the generic perf events and the hardware tracing.
+
+It's nature for the AUX ring buffer to reuse the same algorithm with the generic ring buffer for the buffer management.  The control stucture \code{perf\_event\_mmap\_page} extends the new fields \code{aux\_head} and \code{aux\_tail} for the head and tail pointers of the AUX ring buffer.
+
+The record option \code{record\_opts::auxtrace\_mmap\_pages} is set during the AUX trace initialisation, otherwise, if perf session has not attached to any AUX trace, this option is the default value '0'.  When it is a non-zero value, the function \code{auxtrace\_mmap\_\_mmap()} will allocate pages and the kernel defers to map the pages into VMA when detects the page fault, which is the exactly same mechanism with the generic ring buffer.  As the result, the perf tool have two types of ring buffer and needs to manage every ring buffer individually.
+
+\begin{center}
+\par
+\begin{tikzpicture}[>=latex,font=\sffamily,semithick,scale=1.75]
+	\node [minimum width=1cm,minimum height=2em,outer sep=0pt,draw=black,fill=white] at (0,0) (A) {\code{data\_head}};
+	\node [minimum height=2em] at (A.east) (A2) {};
+	\node [minimum width=1cm,minimum height=2em,outer sep=0pt,draw=black,fill=white,anchor=west] at (A.east) (B) {\code{data\_tail}};
+        \node [minimum width=1cm,minimum height=2em,outer sep=0pt,draw=black,fill=blue!25,right=1cm of B] (C) {};
+        \node [minimum width=1cm,minimum height=2em,outer sep=0pt,draw=black,fill=blue!25,anchor=west] at (C.east) (D) {};
+        \node [minimum width=1cm,minimum height=2em,outer sep=0pt,draw=black,fill=white,anchor=west] at (D.east) (E) {};
+        \node [minimum width=1cm,minimum height=2em,outer sep=0pt,draw=black,fill=white,anchor=west] at (E.east) (F) {};
+        \node [minimum width=1cm,minimum height=2em,outer sep=0pt,draw=black,fill=white,anchor=west] at (F.east) (G) {};
+        \node [minimum width=1cm,minimum height=2em,outer sep=0pt,draw=black,fill=blue!25,anchor=west] at (G.east) (H) {};
+        \node [minimum width=1cm,minimum height=2em,outer sep=0pt,draw=black,fill=blue!25,anchor=west] at (H.east) (I) {};
+	\node [minimum width=1cm,minimum height=2em,outer sep=0pt,above=0.7em of A2] (control) {user page};
+	\node [minimum width=1cm,minimum height=2em,outer sep=0pt,above=0.7em of F] (buffer) {generic ring buffer};
+	\draw [->,shorten >=2pt,shorten <=2pt,semithick,dotted] (I.east) -- +(1em,0em) -- +(1em,-1.5em) -- +(-11.5em,-1.5em) -- +(-11.5em,0em) -- (C.west);
+	\draw [->,shorten >=2pt,shorten <=2pt,semithick] (A.north) -- +(0em,.5em) -| (D.north);
+	\draw [->,shorten >=2pt,shorten <=2pt,semithick] (B.south) -- +(0em,-.5em) -| (G.south);
+
+	\node [minimum width=2cm,minimum height=2em,outer sep=0pt,draw=black,fill=white,below=2cm of A] (AA) {\code{aux\_head}};
+	\node [minimum width=2cm,minimum height=2em,outer sep=0pt,draw=black,fill=white,anchor=west] at (AA.east) (BB) {\code{aux\_tail}};
+        \node [minimum width=1cm,minimum height=2em,outer sep=0pt,draw=black,fill=white,right=1cm of BB] (CC) {};
+        \node [minimum width=1cm,minimum height=2em,outer sep=0pt,draw=black,fill=white,anchor=west] at (CC.east) (DD) {};
+        \node [minimum width=1cm,minimum height=2em,outer sep=0pt,draw=black,fill=blue!25,anchor=west] at (DD.east) (EE) {};
+        \node [minimum width=1cm,minimum height=2em,outer sep=0pt,draw=black,fill=blue!25,anchor=west] at (EE.east) (FF) {};
+        \node [minimum width=1cm,minimum height=2em,outer sep=0pt,draw=black,fill=blue!25,anchor=west] at (FF.east) (GG) {};
+        \node [minimum width=1cm,minimum height=2em,outer sep=0pt,draw=black,fill=blue!25,anchor=west] at (GG.east) (HH) {};
+        \node [minimum width=1cm,minimum height=2em,outer sep=0pt,draw=black,fill=blue!25,anchor=west] at (HH.east) (II) {};
+	\node [minimum width=1cm,minimum height=2em,outer sep=0pt,above=0.7em of FF] (buffer2) {AUX ring buffer};
+	\draw [->,shorten >=2pt,shorten <=2pt,semithick,dotted] (II.east) -- +(1em,0em) -- +(1em,-1.5em) -- +(-11.5em,-1.5em) -- +(-11.5em,0em) -- (CC.west);
+	\draw [->,shorten >=2pt,shorten <=2pt,semithick] (AA.north) -- +(0em,.5em) -| (II.north);
+	\draw [->,shorten >=2pt,shorten <=2pt,semithick] (BB.south) -- +(0em,-.5em) -| (DD.south);
+
+\end{tikzpicture}
+\par
+\textbf{Figure 8: Perf generic ring buffer and AUX ring buffer}
+\end{center}
+
+An interesting question is: Is it possible to only allocate the AUX ring buffer for hardware trace if there have no any other PMU events opened?  Say below command only enables Arm CoreSight event:
+
+\code{\\\indent perf record -e cs\_etm/@tmc\_etr0/u --a program\\}
+
+
+In fact, the generic ring buffer and AUX ring buffer are allocated in pairs, even when only the hardware trace event is enabled (see \code{mmap\_\_mmap()}).  The reason is the generic ring buffer is not merely for event sampling, it also records the process memory mapping so that the info can be used for parsing symbols, and the AUX event will be saved into the generic ring buffer as well.  The AUX event and AUX trace data will be addressed in details in the later section.
+
+As we have discussed the generic ring buffer allocation for trace modes, based on that, we can review the AUX ring buffer deployment for different trace modes.  I.e., for per thread mode, perf tool only allocates one generic ring buffer and one AUX ring buffer for the whole session; for the system wide mode, perf allocates the generic ring buffer and the AUX ring buffer per CPU wise.  The figure demonstrates the buffers layout in the system wide mode; if there have any activities on one CPU, the event samples and the hardware trace data are recorded into the dedicated buffers for the CPU.
+
+\begin{center}
+\par
+\begin{tikzpicture}[>=latex,font=\sffamily,semithick,scale=1.75]
+	\node [minimum width=3cm,minimum height=.5cm,outer sep=0pt] at (0,0) (cpu0) {\( CPU_0 \)};
+	\node [minimum width=1cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=blue!25,right=0cm of cpu0] at (cpu0.east) (cpu0_p1_0) {\(T_{1}\)};
+	\node [minimum width=2cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=blue!50,right=3cm of cpu0] at (cpu0.east) (cpu0_p2_0) {\(T_{2}\)};
+	\node [minimum width=1cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=blue!25,right=7cm of cpu0] (cpu0_p1_1) {\(T_{1}\)};
+	\draw[->] (cpu0.south east) -- +(5cm,0);
+
+	\node [minimum width=3cm,minimum height=.5cm,outer sep=0pt,below=.5cm of cpu0] (rb0_txt) {Ring buffer 0};
+	\node [minimum width=8cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!25,right=0cm of rb0_txt] (rb0) {};
+
+	\node [minimum width=3cm,minimum height=.5cm,outer sep=0pt,below=.5cm of rb0_txt] (aux_rb0_txt) {AUX ring buffer 0};
+	\node [minimum width=8cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!50,right=0cm of aux_rb0_txt] (aux_rb0) {};
+
+	\node [minimum width=3cm,minimum height=.5cm,outer sep=0pt,below=.5cm of aux_rb0_txt] (cpu1) {\(CPU_{1}\)};
+	\node [minimum width=1cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=blue!25,right=1cm of cpu1] at (cpu1.east) (cpu1_p1_0) {\(T_{1}\)};
+	\draw[->] (cpu1.south east) -- +(5cm,0);
+
+	\node [minimum width=3cm,minimum height=.5cm,outer sep=0pt,below=.5cm of cpu1] (rb1_txt) {Ring buffer 1};
+	\node [minimum width=8cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!25,right=0cm of rb1_txt] (rb1) {};
+
+	\node [minimum width=3cm,minimum height=.5cm,outer sep=0pt,below=.5cm of rb1_txt] (aux_rb1_txt) {AUX ring buffer 1};
+	\node [minimum width=8cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!50,right=0cm of aux_rb1_txt] (aux_rb1) {};
+
+	\node [minimum width=3cm,minimum height=.5cm,outer sep=0pt,below=.5cm of aux_rb1_txt] (cpu2) {\(CPU_{2}\)};
+	\node [minimum width=1cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=blue!25,right=4cm of cpu2] (cpu2_p1_0) {\(T_{1}\)};
+	\node [minimum width=2cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=blue!75,right=6cm of cpu2] (cpu2_p3_0) {\(T_{3}\)};
+	\draw[->] (cpu2.south east) -- +(5cm,0);
+
+	\node [minimum width=3cm,minimum height=.5cm,outer sep=0pt,below=.5cm of cpu2] (rb2_txt) {Ring buffer 2};
+	\node [minimum width=8cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!25,right=0cm of rb2_txt] (rb2) {};
+
+	\node [minimum width=3cm,minimum height=.5cm,outer sep=0pt,below=.5cm of rb2_txt] (aux_rb2_txt) {AUX ring buffer 2};
+	\node [minimum width=8cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!50,right=0cm of aux_rb2_txt] (aux_rb2) {};
+
+	\node [minimum width=3cm,minimum height=.5cm,outer sep=0pt,below=.5cm of aux_rb2_txt] (cpu3) {\(CPU_{3}\)};
+	\node [minimum width=2cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=blue!25,right=2cm of cpu3] (cpu3_p1_0) {\(T_{1}\)};
+	\draw[->] (cpu3.south east) -- +(5cm,0);
+
+	\node [minimum width=3cm,minimum height=.5cm,outer sep=0pt,below=.5cm of cpu3] (rb3_txt) {Ring buffer 3};
+	\node [minimum width=8cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!25,right=0cm of rb3_txt] (rb3) {};
+
+	\node [minimum width=3cm,minimum height=.5cm,outer sep=0pt,below=.5cm of rb3_txt] (aux_rb3_txt) {AUX ring buffer 3};
+	\node [minimum width=8cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!50,right=0cm of aux_rb3_txt] (aux_rb3) {};
+
+	\draw[->,dotted] (cpu0_p1_0.south) -- (cpu0_p1_0.south|-rb0.north);
+	\draw[->,dotted] (cpu0_p1_1.south) -- (cpu0_p1_1.south|-rb0.north);
+	\draw[->,dotted] (cpu0_p2_0.south) -- (cpu0_p2_0.south|-rb0.north);
+
+	\draw[->,dotted] (cpu0_p1_0.south) -- (cpu0_p1_0.south|-aux_rb0.north);
+	\draw[->,dotted] (cpu0_p1_1.south) -- (cpu0_p1_1.south|-aux_rb0.north);
+	\draw[->,dotted] (cpu0_p2_0.south) -- (cpu0_p2_0.south|-aux_rb0.north);
+
+	\draw[->,dotted] (cpu1_p1_0.south) -- (cpu1_p1_0.south|-rb1.north);
+
+	\draw[->,dotted] (cpu1_p1_0.south) -- (cpu1_p1_0.south|-aux_rb1.north);
+
+	\draw[->,dotted] (cpu2_p1_0.south) -- (cpu2_p1_0.south|-rb2.north);
+	\draw[->,dotted] (cpu2_p3_0.south) -- (cpu2_p3_0.south|-rb2.north);
+
+	\draw[->,dotted] (cpu2_p1_0.south) -- (cpu2_p1_0.south|-aux_rb2.north);
+	\draw[->,dotted] (cpu2_p3_0.south) -- (cpu2_p3_0.south|-aux_rb2.north);
+
+	\draw[->,dotted] (cpu3_p1_0.south) -- (cpu3_p1_0.south|-rb3.north);
+
+	\draw[->,dotted] (cpu3_p1_0.south) -- (cpu3_p1_0.south|-aux_rb3.north);
+\end{tikzpicture}
+\par
+\textbf{Figure 9: Generic and AUX ring buffers for system wide mode}
+\end{center}
+
+\subsection*{The AUX event and trace data}
 
 \end{document}
