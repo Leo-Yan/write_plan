@@ -542,7 +542,7 @@ do {
 
 Comparing to \code{perf\_buffer}, the structure \code{perf\_output\_handle} is only used during the event sampling.  When an event is overflow, it firstly uses the structure \code{perf\_output\_handle} to establish a context for buffer's accessing, afterwards, sampling only uses the field \code{perf\_output\_handle::addr} as the destination address for copying sample data. 
 
-A significant benefit from the structure \code{perf\_output\_handle} is it allows different events to write buffer concurrently.  The stucture \code{perf\_output\_handle} maintains two contexts for the software event and hardware event separately, thus every event reserves its own memory space in the function \code{out\_begin()} and \code{perf\_output\_handle::addr} is used for filling samples.
+A significant benefit from the structure \code{perf\_output\_handle} is it allows different events to write buffer concurrently.  Following the previous example, two copies of \code{perf\_output\_handle} work as two contexts for the software event and hardware event separately, thus every event reserves its own memory space in the function \code{out\_begin()} and \code{perf\_output\_handle::addr} is used for filling samples.
 
 Until the sample data has been stored into buffer, the ring buffer's header is synced from \code{perf\_buffer::head} to \code{perf\_event\_mmap\_page::data\_head} in the function \code{perf\_output\_end()}.  This delivers the message to the perf tool that "now you are safe to read out the new samples from the user space".
 
@@ -686,7 +686,7 @@ An interesting question is: Is it possible to only allocate the AUX ring buffer 
 
 In fact, the generic ring buffer and AUX ring buffer are allocated in pairs, even when only the hardware trace event is enabled (see \code{mmap\_\_mmap()}).  The reason is the generic ring buffer is not merely for event sampling, it also records the process memory mapping so that the info can be used for parsing symbols, and the AUX event will be saved into the generic ring buffer as well.  The AUX event and AUX trace data will be addressed in details in the later section.
 
-As we have discussed the generic ring buffer allocation for trace modes, based on that, we can review the AUX ring buffer deployment for different trace modes.  I.e., for per thread mode, perf tool only allocates one generic ring buffer and one AUX ring buffer for the whole session; for the system wide mode, perf allocates the generic ring buffer and the AUX ring buffer per CPU wise.  The figure demonstrates the buffers layout in the system wide mode; if there have any activities on one CPU, the event samples and the hardware trace data are recorded into the dedicated buffers for the CPU.
+Now let's review the AUX ring buffer deployment for perf modes.  I.e., for per thread mode, perf tool only allocates one generic ring buffer and one AUX ring buffer for the whole session; for the system wide mode, perf allocates the generic ring buffer and the AUX ring buffer per CPU wise.  The figure demonstrates the buffers layout in the system wide mode; if there have any activities on one CPU, the event samples and the hardware trace data are recorded into the dedicated buffers for the CPU.
 
 \begin{center}
 \par
@@ -760,6 +760,101 @@ As we have discussed the generic ring buffer allocation for trace modes, based o
 \textbf{Figure 9: Generic and AUX ring buffers for system wide mode}
 \end{center}
 
-\subsection*{The AUX event and trace data}
+\subsection*{AUX events}
+
+Similiar to \code{perf\_output\_begin()} and \code{perf\_output\_end()} for the generic ring buffer, the functions \code{perf\_aux\_output\_begin()} and \code{perf\_aux\_output\_end()} works as AUX ring buffer variant for processing the hardware trace data.
+
+Same as the generic ring bufer, the structure \code{perf\_output\_handle} is used as a context to track the AUX buffer's info.  Unlike \code{perf\_output\_begin()} allocates the buffer for only one sample, \code{perf\_aux\_output\_begin()} creates the context and allocate all available buffer for filling AUX trace data.
+
+The function \code{perf\_aux\_output\_end()} finishes two things:
+\begin{itemize}
+	\item It fills an event \code{PERF\_RECORD\_AUX} into the generic ring buffer, this event delivers the information of the start address and data size for a chunk of hardware trace data has been stored into the AUX ring buffer;
+	\item The driver has stored new trace data into the AUX ring buffer, the argument \code{size} indicates how many bytes have been consumed by the hardware tracing, thus \code{perf\_aux\_output\_end()} updates the header pointer to reflect the latest buffer usage.
+\end{itemize}
+
+There have two occasions to wake up the perf tool for reading out AUX trace data.  Except the event \code{PERF\_RECORD\_AUX} can wake up the perf process, if the AUX trace size beyonds the watermark, the kernel also wakes up the perf process to fetch AUX trace data.
+
+Perf tool saves events continuously in data file, the event \code{PERF\_RECORD\_AUX} is saved same as any other events.  But the event \code{PERF\_RECORD\_AUX} doesn't contain any AUX trace data, it just presents a single recording event occurring in the kernel, and if the AUX ring buffer is big enough, it's possible that the multiple \code{PERF\_RECORD\_AUX} events occured prior to wake up the perf tool to handle the AUX ring buffer.
+
+\begin{center}
+\par
+\begin{tikzpicture}[>=latex,font=\sffamily,semithick,scale=1.75]
+	\node [minimum width=3cm,minimum height=.5cm,outer sep=0pt,below=.5cm of cpu0] at (0,0) (rb0_txt) {Ring buffer 0};
+	\node [minimum width=1cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!25,right=.5cm of rb0_txt] at (rb0_txt.east) (rb0_1) {...};
+	\node [minimum width=3cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!25,anchor=west] at (rb0_1.east) (rb0_2) {\tiny \(PERF\_RECORD\_AUX\)};
+	\node [minimum width=1cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!25,anchor=west] at (rb0_2.east) (rb0_3) {...};
+	\node [minimum width=3cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!25,anchor=west] at (rb0_3.east) (rb0_4) {\tiny \(PERF\_RECORD\_AUX\)};
+	\node [minimum width=1cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!25,anchor=west] at (rb0_4.east) (rb0_5) {...};
+
+	\node [minimum width=3cm,minimum height=.5cm,outer sep=0pt,below=.5cm of rb0_txt] (aux_rb0_txt) {AUX ring buffer 0};
+	\node [minimum width=2cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!50,anchor=west,right=2.5cm of aux_rb0_txt] (aux_rb0_1) {};
+	\node [minimum width=4cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!50,anchor=west] at (aux_rb0_1.east) (aux_rb0_2) {};
+
+	\node [minimum width=3cm,minimum height=.5cm,outer sep=0pt,below=1cm of aux_rb0_txt] (data) {Perf data file};
+	\node [minimum width=.5cm,minimum height=.5cm,outer sep=0pt,draw=black,,right=3cm of data] at (data.east) (data_1) {...};
+	\node [minimum width=.5cm,minimum height=.5cm,outer sep=0pt,draw=black,anchor=west] at (data_1.east) (data_2) {...};
+	\node [minimum width=.5cm,minimum height=.5cm,outer sep=0pt,draw=black,anchor=west] at (data_2.east) (data_3) {...};
+	\node [minimum width=.5cm,minimum height=.5cm,outer sep=0pt,draw=black,anchor=west] at (data_3.east) (data_4) {...};
+	\node [minimum width=.5cm,minimum height=.5cm,outer sep=0pt,draw=black,anchor=west] at (data_4.east) (data_5) {...};
+	\node [minimum width=.5cm,minimum height=.5cm,outer sep=0pt,draw=black,anchor=west] at (data_5.east) (data_6) {...};
+
+	\draw [->,semithick] (rb0_1.west) -- +(-.5em,0em) |- (data_1.west);
+	\draw [->,dotted] (rb0_2.south) -- +(0em,-.3em) -| (aux_rb0_1.north);
+	\draw [->,dotted] (rb0_4.south) -- +(0em,-.3em) -| (aux_rb0_2.north);
+
+	\draw [->,semithick] (aux_rb0_1.south) -- +(0em,-.8em) -| (data_4.north);
+	\draw [->,semithick] (aux_rb0_2.south) -- +(0em,-.8em) node[right,align=left,yshift=0cm,font=\tiny] {PERF\_RECORD\_AUXTRACE\\is synthesized in perf when\\record AUX trace data} -| (data_4.north);
+
+\end{tikzpicture}
+\par
+\textbf{Figure 10: AUX events \code{PERF\_RECORD\_AUX} and \code{PERF\_RECORD\_AUXTRACE}}
+\end{center}
+
+Perf needs to give out a clear boundary that "hey, this chunk in the perf file is the AUX trace data" when saves the AUX trace data into perf file and afterwards can be easily parsed in the post analysis.  For this reason, perf tool synthesizes an event \code{PERF\_RECORD\_AUXTRACE} which combines the event header and AUX trace data.
+
+\subsection*{Snapshot mode for AUX ring buffer}
+
+Perf provides snapshot mode for AUX ring buffer, in this mode, users can only record AUX trace data at a specific time point which users are interested in.  E.g. if an user wants to record the AUX trace data periodically with 1 second interval, it can use commands:
+
+\begin{lstlisting}
+	perf record -e cs_etm/@tmc_etr0/u -S -a program &
+	PERFPID=$!
+	while true; do
+		kill -USR2 $PERFPID
+		sleep 1
+	done
+\end{lstlisting}
+
+Let's firstly answer serveral questions to make clear the concept for snapshot: What's the snapshot and what's relationship between the snapsthot mode and the existed perf modes?  The snapshot mode is only relevant to how to record the AUX tracing data, it is no matter with the ring buffers deployment.  As we know, the buffers deployment is decided by per thread mode, per CPU mode or system wide mode, and the snapshot can be applied to any of these modes.
+
+\begin{center}
+\par
+\begin{tikzpicture}[>=latex,font=\sffamily,semithick,scale=1.75]
+	\node [minimum width=3cm,minimum height=.5cm,outer sep=0pt] at (0,0) (aux_rb0_txt) {AUX ring buffer 0};
+	\node [minimum width=4cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!50,right=2cm of aux_rb0_txt] (aux_rb0) {};
+
+	\node [minimum width=3cm,minimum height=.5cm,outer sep=0pt,below=.5cm of aux_rb0_txt] (aux_rb1_txt) {AUX ring buffer 1};
+	\node [minimum width=1cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!50,right=5cm of aux_rb1_txt] (aux_rb1) {};
+
+	\node [minimum width=3cm,minimum height=.5cm,outer sep=0pt,below=.5cm of aux_rb1_txt] (aux_rb2_txt) {AUX ring buffer 2};
+	\node [minimum width=5cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!50,right=1cm of aux_rb2_txt] (aux_rb2) {};
+
+	\node [minimum width=3cm,minimum height=.5cm,outer sep=0pt,below=.5cm of aux_rb2_txt] (aux_rb3_txt) {AUX ring buffer 3};
+	\node [minimum width=2cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!50,right=4cm of aux_rb3_txt] (aux_rb3) {};
+
+	\draw[<->,dotted] (aux_rb0.east) -- node[right,align=left,yshift=0cm,font=\small] {Snapshot is taken and \\all AUX trace data is\\ saved into perf data file} (aux_rb3.east);
+\end{tikzpicture}
+\par
+\textbf{Figure 11: Snapshot with system wide mode}
+\end{center}
+
+The main flow for snapshot is:
+
+\begin{itemize}
+	\item Before the snapshot is taken, the AUX ring buffer runs in free mode; there have no the AUX event and the trace date will not be saved into the perf data file;
+	\item When the user wants to snapshot it signals \code{USR2} to perf tool, perf will invoke the callback \code{auxtrace\_record::snapshot\_start()} to disable the hardware tracing;
+	\item \code{record\_\_read\_auxtrace\_snapshot()} reads out the hardware trace data from AUX ring buffer, and saves into perf data file; during this process, the callback \code{auxtrace\_record::find\_snapshot()} is used to calculate the head and old head (these two heads are used to cauculate the trace data size which will be described soon);
+	\item After the snapshot is finished, \code{auxtrace\_record::snapshot\_finish()} will restart the PMU event for AUX tracing, so the hardware will generate new trace data.
+\end{itemize}
 
 \end{document}
