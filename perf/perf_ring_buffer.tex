@@ -812,7 +812,7 @@ Perf tool saves events continuously in data file, the event \code{PERF\_RECORD\_
 
 Perf needs to give out a clear boundary that "hey, this chunk in the perf file is the AUX trace data" when saves the AUX trace data into perf file and afterwards can be easily parsed in the post analysis.  For this reason, perf tool synthesizes an event \code{PERF\_RECORD\_AUXTRACE} which combines the event header and AUX trace data.
 
-\subsection*{Snapshot mode for AUX ring buffer}
+\subsection*{Snapshot mode}
 
 Perf provides snapshot mode for AUX ring buffer, in this mode, users can only record AUX trace data at a specific time point which users are interested in.  E.g. if an user wants to record the AUX trace data periodically with 1 second interval, it can use commands:
 
@@ -825,7 +825,7 @@ Perf provides snapshot mode for AUX ring buffer, in this mode, users can only re
 	done
 \end{lstlisting}
 
-Let's firstly answer serveral questions to make clear the concept for snapshot: What's the snapshot and what's relationship between the snapsthot mode and the existed perf modes?  The snapshot mode is only relevant to how to record the AUX tracing data, it is no matter with the ring buffers deployment.  As we know, the buffers deployment is decided by per thread mode, per CPU mode or system wide mode, and the snapshot can be applied to any of these modes.
+Let's firstly answer serveral questions to make clear the concept for snapshot: what's the snapshot and what's relationship between the snapsthot mode and the existed perf modes?  The snapshot mode is only relevant to how to record the AUX tracing data, it is no matter with the ring buffers deployment.  As we know, the buffers deployment is decided by per thread mode, per CPU mode or system wide mode, and the snapshot can be applied to any of these modes.
 
 \begin{center}
 \par
@@ -852,9 +852,13 @@ The main flow for snapshot is:
 
 \begin{itemize}
 	\item Before the snapshot is taken, the AUX ring buffer runs in free mode; there have no the AUX event and the trace date will not be saved into the perf data file;
-	\item When the user wants to snapshot it signals \code{USR2} to perf tool, perf will invoke the callback \code{auxtrace\_record::snapshot\_start()} to disable the hardware tracing;
-	\item \code{record\_\_read\_auxtrace\_snapshot()} reads out the hardware trace data from AUX ring buffer, and saves into perf data file; during this process, the callback \code{auxtrace\_record::find\_snapshot()} is used to calculate the head and old head (these two heads are used to cauculate the trace data size which will be described soon);
+	\item When the user takes a snapshot for the profiling, it sends \code{USR2} signal to perf, perf will invoke the callback \code{auxtrace\_record::snapshot\_start()} to disable the hardware tracing; in the kernel the driver fills the hardware trace data into the AUX ring buffer and the event \code{PERF\_RECORD\_AUX} is saved in the generic ring buffer;
+	\item \code{record\_\_read\_auxtrace\_snapshot()} reads out the hardware trace data from AUX ring buffer, and saves into perf data file; during this process, the callback \code{auxtrace\_record::find\_snapshot()} is used to calculate the head and old head, these two heads will be described soon;
 	\item After the snapshot is finished, \code{auxtrace\_record::snapshot\_finish()} will restart the PMU event for AUX tracing, so the hardware will generate new trace data.
 \end{itemize}
+
+A prominent difference for snapshot is it only uses the head pointer \code{aux\_head} and doesn't update tail pointer \code{aux\_tail}.  The AUX ring buffer is possible that has not been overflow when snapshot, but if users take enough time for running the profiled program before taking snapshot, the AUX ring buffer can be filled with the AUX trace data for one or even multiple rounds, therefore the tail pointer is useless and perf doesn't maintain it for snapshot mode.  The AUX trace data size calculation is specific for AUX event, so the callback \code{auxtrace\_record::find\_snapshot()} is introduced, it needs to judge the head pointer has been wrapped around or not, and fixes up the head and the "old" head based on different situations.
+
+\section*{Arm CoreSight: an example for using AUX ring buffer}
 
 \end{document}
