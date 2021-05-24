@@ -639,7 +639,7 @@ In an overview, the AUX ring buffer is an auxiliary for the generic ring buffer.
 
 It's nature for the AUX ring buffer to reuse the same algorithm with the generic ring buffer for the buffer management.  The control stucture \code{perf\_event\_mmap\_page} extends the new fields \code{aux\_head} and \code{aux\_tail} for the head and tail pointers of the AUX ring buffer.
 
-The record option \code{record\_opts::auxtrace\_mmap\_pages} is set during the AUX trace initialisation, otherwise, if perf session has not attached to any AUX trace, this option is the default value '0'.  When it is a non-zero value, the function \code{auxtrace\_mmap\_\_mmap()} will allocate pages and the kernel defers to map the pages into VMA when detects the page fault, which is the exactly same mechanism with the generic ring buffer.  As the result, the perf tool have two types of ring buffer and needs to manage every ring buffer individually.
+The record option \code{record\_opts::auxtrace\_mmap\_pages} is set during the AUX trace initialisation, otherwise, if perf session has not attached to any AUX trace, this option is the default value '0'.  When it is a non-zero value, the function \code{auxtrace\_mmap\_\_mmap()} invokes system call mmap() and the kernel function \code{rb\_alloc\_aux()} serves for allocating pages; these pages will be deferred to map into VMA when detects the page fault which is the exactly same mechanism with the generic ring buffer.  As the result, the perf tool have two types of ring buffer and needs to manage every ring buffer individually.
 
 \begin{center}
 \par
@@ -860,5 +860,82 @@ The main flow for snapshot is:
 A prominent difference for snapshot is it only uses the head pointer \code{aux\_head} and doesn't update tail pointer \code{aux\_tail}.  The AUX ring buffer is possible that has not been overflow when snapshot, but if users take enough time for running the profiled program before taking snapshot, the AUX ring buffer can be filled with the AUX trace data for one or even multiple rounds, therefore the tail pointer is useless and perf doesn't maintain it for snapshot mode.  The AUX trace data size calculation is specific for AUX event, so the callback \code{auxtrace\_record::find\_snapshot()} is introduced, it needs to judge the head pointer has been wrapped around or not, and fixes up the head and the "old" head based on different situations.
 
 \section*{Arm CoreSight: an example for using AUX ring buffer}
+
+This chapter reviews how Arm CoreSight uses AUX ring buffer (as writing this document the kernel's latest version is v5.13, all the discussion is based on the code in this version).  It uses bottom-up approach to go through the Arm CoreSight implementation: it firstly summarizes the underlying hardware design, and then describes the implementation for how Arm CoreSight integrates the AUX ring buffer in details.
+
+\subsection*{Recap for Arm CoreSight}
+
+The Arm architecture refers to a processor or core as a Processing Element (PE), any PE connected to a tracer can be recroded for its program flow by the tracer; the tracer is named as Embedded Trace Macrocell (ETM), nowdays the commonly used tracer IP is ETMv4 for Armv8 CPUs.
+
+The data path is required for outputting trace data, a data path is established by links between tracers and sinks, a link can be a funnel or a replicator; a funnel is used to pass multiple tracers to a sink, and a replicator can be used to distribute the same source to different sinks.
+
+The end point is a sink, different sinks are for different target medias.  A sink can be Trace Port Interface Units (TPIUs) for dumping trace data to high speed port so the trace data can be captured by external debugger tool, Embedded Trace Buffers (ETB) for saving trace data to SRAM or Trace Memory Controllers (TMC) for accessing SDRAM.
+
+Of course, the up description is highly condensed and it just wants to create a simplized hardware model to give readers a sense for how the CoreSight works with different components; the realistic hardware is much more complex.
+
+Let's focus on the AUX ring buffer implementation, so we will take close look at TMC which uses the system memory for outputting trace data.
+
+\subsection*{Three memory modes for Trace Memory Controllers (TMC)}
+
+TMC supports three memory modes: flat mode, scatter-gather mode, and Coresight Address Translation Unit (CATU) mode.
+
+The memory modes can be divided into two kinds of pages allocation.  The flat mode asks to allocate memory with physical continuous pages, TMC directly access the memory region based on the physical address.  For scatter-gather mode and CATU mode, both supports the scatter-list pages, this gives the flexibility for using the discontinuous pages and relies on translation table for accessing physical pages.
+
+Comparing against the scatter-gather mode, the CATU mode is improved for the physical address space length.  The translation table entry is extended from scatter-gather mode's 32 bits to CATU mode's 64 bits, the scatter-gather mode only can support maximum to 40 bits of physical address space (the table entry's bit4-bit31 are mapped to physcial address bit12-bit39), in opposition CATU supports 64 bits of physical address space.
+
+\begin{center}
+\par
+\begin{tikzpicture}[>=latex,font=\sffamily,semithick,scale=1.75]
+	\node [minimum width=3cm,minimum height=.6cm,outer sep=0pt] at (0,0) (sg_mode) {SG mode};
+	\node [minimum width=2cm,minimum height=.6cm,outer sep=0pt,draw=black,right=0cm of sg_mode,font=\tiny] (sg_address) {Address[39:12]};
+	\node [minimum width=1cm,minimum height=.6cm,outer sep=0pt,draw=black,anchor=west,font=\tiny] at (sg_address.east) (sg_sbz) {SBZ};
+	\node [minimum width=1cm,minimum height=.6cm,outer sep=0pt,draw=black,anchor=west,font=\tiny] at (sg_sbz.east) (sg_type) {Entry type};
+
+	\node [minimum width=3cm,minimum height=.6cm,outer sep=0pt,below=1cm of sg_mode] (catu_mode) {CATU mode};
+	\node [minimum width=6cm,minimum height=.6cm,outer sep=0pt,draw=black,right=0cm of catu_mode,font=\tiny] (catu_address) {Address[63:12]};
+	\node [minimum width=1cm,minimum height=.6cm,outer sep=0pt,draw=black,anchor=west,font=\tiny] at (catu_address.east) (catu_sbz) {SBZ};
+	\node [minimum width=1cm,minimum height=.6cm,outer sep=0pt,draw=black,anchor=west,font=\tiny] at (catu_sbz.east) (catu_valid) {Valid};
+
+	\node [above right = 0em and -1.5em of sg_type,font=\tiny] (lable1) {Bit0};
+	\node [above right = 0em and -1.5em of sg_sbz,font=\tiny] (lable1) {Bit2};
+	\node [above right = 0em and -1.5em of sg_address,font=\tiny] (lable1) {Bit4};
+	\node [above left = 0em and -1.5em of sg_address,font=\tiny] (lable1) {Bit31};
+
+	\node [above right = 0em and -1.5em of catu_valid,font=\tiny] (lable1) {Bit0};
+	\node [above right = 0em and -1.5em of catu_sbz,font=\tiny] (lable1) {Bit1};
+	\node [above right = 0em and -1.5em of catu_address,font=\tiny] (lable1) {Bit12};
+	\node [above left = 0em and -1.5em of catu_address,font=\tiny] (lable1) {Bit63};
+\end{tikzpicture}
+\par
+\textbf{Figure 12: Table entry format for SG and CATU modes}
+\end{center}
+
+\subsection*{The implementation for AUX ring buffer}
+
+Below four callbacks in the structure \code{pmu} play important roles to manipulate the AUX ring buffer:
+
+\begin{lstlisting}
+int __init etm_perf_init(void)
+{
+        [...]
+
+        etm_pmu.setup_aux               = etm_setup_aux;
+        etm_pmu.free_aux                = etm_free_aux;
+        etm_pmu.start                   = etm_event_start;
+        etm_pmu.stop                    = etm_event_stop;
+
+        [...]
+}
+\end{lstlisting}
+
+As mentioned the AUX ring buffer has been allocated by \code{rb\_alloc\_aux()}, the anticipated design is to call \code{pmu::setup\_aux()} to setup the PMU private data structures for the AUX ring buffer, e.g. creates the translation table for scatter-gather pages so that the hardware can directly use the AUX ring buffer.
+
+Unfortunately, Arm CoreSight's flat mode cannot support the scatter-gather pages, the solution is the function \code{etm\_setup\_aux()} invokes\\\code{sink\_ops(sink)->alloc\_buffer()}, the sink operation \code{sink\_ops(sink)} is dynamically assigned based on the memory mode, whatever which mode is in use, the low level callback \code{sink\_ops(sink)->alloc\_buffer()} allocates a bounce buffer, at the end TMC rountes trace data into the bounce buffer.
+
+It's easy to understand for applying the bounce buffer for flat mode; it's questionable for SG and CATU modes, which have already support scatter-gather list from the hardware design but why still use the bounce buffer in the software code?  A reason is that this allows the implementation is general for all of these three modes, and the code is neat enough for later optimization.
+
+The function \code{etm\_event\_start()}
+
+\code{etm\_free\_aux()} frees the control data structures and the bounce buffer.
 
 \end{document}
