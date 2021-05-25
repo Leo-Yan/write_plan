@@ -757,7 +757,7 @@ Now let's review the AUX ring buffer deployment for perf modes.  I.e., for per t
 	\draw[->,dotted] (cpu3_p1_0.south) -- (cpu3_p1_0.south|-aux_rb3.north);
 \end{tikzpicture}
 \par
-\textbf{Figure 9: Generic and AUX ring buffers for system wide mode}
+\textbf{Figure 9: Ring buffers for system wide mode}
 \end{center}
 
 \subsection*{AUX events}
@@ -910,9 +910,9 @@ Comparing against the scatter-gather mode, the CATU mode is improved for the phy
 \textbf{Figure 12: Table entry format for SG and CATU modes}
 \end{center}
 
-\subsection*{The implementation for AUX ring buffer}
+\subsection*{Implementation AUX ring buffer for Arm CoreSight}
 
-Below four callbacks in the structure \code{pmu} play important roles to manipulate the AUX ring buffer:
+Below four callbacks in the structure \code{pmu} play important roles for manipulating the AUX ring buffer.
 
 \begin{lstlisting}
 int __init etm_perf_init(void)
@@ -928,14 +928,82 @@ int __init etm_perf_init(void)
 }
 \end{lstlisting}
 
-As mentioned the AUX ring buffer has been allocated by \code{rb\_alloc\_aux()}, the anticipated design is to call \code{pmu::setup\_aux()} to setup the PMU private data structures for the AUX ring buffer, e.g. creates the translation table for scatter-gather pages so that the hardware can directly use the AUX ring buffer.
+As mentioned the AUX ring buffer has been allocated by \code{rb\_alloc\_aux()}, the original design anticipates calling \code{pmu::setup\_aux()} to setup the PMU private data structures for the AUX ring buffer, e.g. creates the translation table for scatter-gather pages so that the sink can directly access the AUX ring buffer.
 
 Unfortunately, Arm CoreSight's flat mode cannot support the scatter-gather pages, the solution is the function \code{etm\_setup\_aux()} invokes\\\code{sink\_ops(sink)->alloc\_buffer()}, the sink operation \code{sink\_ops(sink)} is dynamically assigned based on the memory mode, whatever which mode is in use, the low level callback \code{sink\_ops(sink)->alloc\_buffer()} allocates a bounce buffer, at the end TMC rountes trace data into the bounce buffer.
 
 It's easy to understand for applying the bounce buffer for flat mode; it's questionable for SG and CATU modes, which have already support scatter-gather list from the hardware design but why still use the bounce buffer in the software code?  A reason is that this allows the implementation is general for all of these three modes, and the code is neat enough for later optimization.
 
-The function \code{etm\_event\_start()}
+\begin{center}
+\par
+\begin{tikzpicture}[>=latex,font=\sffamily,semithick,scale=1.75]
+	\node [minimum width=3.5cm,minimum height=.5cm,outer sep=0pt] at (0,0) (aux_rb0_txt) {AUX ring buffer 0};
+	\node [minimum width=8cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!50,right=0cm of aux_rb0_txt] (aux_rb0_0) {};
 
-\code{etm\_free\_aux()} frees the control data structures and the bounce buffer.
+	\node [minimum width=3.5cm,minimum height=.5cm,outer sep=0pt,below=.5cm of aux_rb0_txt] (bounce_buf0_txt) {Bounce buffer 0};
+	\node [minimum width=8cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=yellow!25,right=0cm of bounce_buf0_txt] (boun_buf0_0) {};
+
+	\node [minimum width=3.5cm,minimum height=.5cm,outer sep=0pt,below=.5cm of bounce_buf0_txt] (aux_rb1_txt) {AUX ring buffer 1};
+	\node [minimum width=8cm,minimum height=.5cm,outer sep=0pt,draw=black,right=0cm of aux_rb1_txt,fill=green!50] (aux_rb1_0) {};
+
+	\node [minimum width=3.5cm,minimum height=.5cm,outer sep=0pt,below=.5cm of aux_rb1_txt] (bounce_buf1_txt) {Bounce buffer 1};
+	\node [minimum width=8cm,minimum height=.5cm,outer sep=0pt,draw=black,right=0cm of bounce_buf1_txt,fill=yellow!25] (boun_buf1_0) {};
+
+	\node [minimum width=3.5cm,minimum height=.5cm,outer sep=0pt,below=.5cm of bounce_buf1_txt] (aux_rb2_txt) {AUX ring buffer 2};
+	\node [minimum width=8cm,minimum height=.5cm,outer sep=0pt,draw=black,right=0cm of aux_rb2_txt,fill=green!50] (aux_rb2_0) {};
+
+	\node [minimum width=3.5cm,minimum height=.5cm,outer sep=0pt,below=.5cm of aux_rb2_txt] (bounce_buf2_txt) {Bounce buffer 2};
+	\node [minimum width=8cm,minimum height=.5cm,outer sep=0pt,draw=black,right=0cm of bounce_buf2_txt,fill=yellow!25] (boun_buf2_0) {};
+
+	\node [minimum width=3.5cm,minimum height=.5cm,outer sep=0pt,below=.5cm of bounce_buf2_txt] (aux_rb3_txt) {AUX ring buffer 3};
+	\node [minimum width=8cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!50,right=0cm of aux_rb3_txt] (aux_rb3_0) {};
+
+	\node [minimum width=3.5cm,minimum height=.5cm,outer sep=0pt,below=.5cm of aux_rb3_txt] (bounce_buf3_txt) {Bounce buffer 3};
+	\node [minimum width=8cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!50,right=0cm of bounce_buf3_txt,fill=yellow!25] (boun_buf3_0) {};
+\end{tikzpicture}
+\par
+\textbf{Figure 13: CoreSight bounce buffers for system wide mode }
+\end{center}
+
+It is deserved to mention the memory mapping attribution for the bounce buffer.  For the flat mode, the bounce buffer is allocated from DMA area with function \code{dma\_alloc\_coherent()}, the memory region is mapped with non-cacheable.  This can cause performance downgrading when syncing data from the bounce buffer to the AUX ring buffer.  For SG mode and CATU mode, they accesses the bounce buffer from the linear kernel mapping address, the memory mapping is normal attribution, so this is why before accessing the bounce buffer, it needs to call \code{dma\_sync\_single\_for\_cpu()} to sync the data writtend by device, this can avoid to read stale data in the cache and fetch the data from the memory.
+
+The function \code{etm\_event\_start()} calls \code{perf\_aux\_output\_start()} to prepare a context for AUX ring buffer, it enables the CoreSight components for the tracers, funnels and sinks.  Usually, it establishes a path between ETM and ETR.  If perf works as per CPU mode or system wide mode, there have multiple tracers should be enabled, the function \code{etm\_event\_start()} is called for multiple times, every calling enables a hardware path for a specific ETM.
+
+When perf requires to record the AUX trace data, \code{etm\_event\_stop()} is executed.  It stops the path by turning off tracer (ETM) and sink; when multiple tracers share the same one sink, it waits to copy AUX trace data from the bounce buffer to the AUX ring buffer until the last one tracer is disabled.
+
+In theory, the bounce buffer and the AUX ring buffer should align with each other and keep the same pace for the trace data movement.  But in reality, the bounce buffer is always free running, the AUX ring buffer needs to wait for the perf tool in user space to fetch data, it's possible the available free space in the AUX ring buffer is less than the new generated trace data in the bounce buffer; and the ETR driver can inject extra barrier packets as a boundary for easier decoding.  These factors cause the misalignment between the bounce buffer and AUX ring buffer.
+
+This is why the bounce buffer uses the structure \code{etr\_buf} for managing the offset and size, based on the two values ETR driver can get to know what's the source address and size for copying trace data.  The copied size is capped by \code{perf\_output\_handle::size} which tracks how much the availible buffer size in AUX ring buffer.  Rather than directly using \code{perf\_output\_handle::head} or the user page's \code{aux\_head}, the ETR driver uses pointer \code{etr\_perf\_buffer::head} as the target address in the AUX ring buffer.
+
+\begin{center}
+\par
+\begin{tikzpicture}[>=latex,font=\sffamily,semithick,scale=1.75]
+	\node [minimum width=3.5cm,minimum height=.5cm,outer sep=0pt] at (0,0) (aux_rb1_txt) {AUX ring buffer};
+	\node [minimum width=2cm,minimum height=.5cm,outer sep=0pt,draw=black,right=0cm of aux_rb1_txt] (aux_rb1_0) {};
+	\node [minimum width=2cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!50,right=0cm of aux_rb1_0] (aux_rb1_1) {};
+	\node [minimum width=4cm,minimum height=.5cm,outer sep=0pt,draw=black,right=0cm of aux_rb1_1] (aux_rb1_2) {};
+
+	\node [minimum width=3.5cm,minimum height=.5cm,outer sep=0pt,below=1cm of aux_rb1_txt] (bounce_buf1_txt) {Bounce buffer};
+	\node [minimum width=4cm,minimum height=.5cm,outer sep=0pt,draw=black,right=0cm of bounce_buf1_txt] (boun_buf1_0) {};
+	\node [minimum width=2cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=yellow!25,right=0cm of boun_buf1_0] (boun_buf1_1) {};
+	\node [minimum width=2cm,minimum height=.5cm,outer sep=0pt,draw=black,right=0cm of boun_buf1_1] (boun_buf1_2) {};
+
+	\node [above left= .5em and -7em of aux_rb1_1] (lable1) {etr\_perf\_buffer::head};
+	\node [below left= .5em and -5em of boun_buf1_1] (lable2) {etr\_buf::offset};
+	\draw [<-,dotted] (aux_rb1_1.south) -- node[midway,yshift=0cm,font=\small] {memcpy(..., min(etr\_buf::size, handle->size)); } (boun_buf1_1.north);
+\end{tikzpicture}
+\par
+\textbf{Figure 14: Syncing between bounce buffer and AUX ring buffer}
+\end{center}
+
+At the end of perf session, \code{etm\_free\_aux()} frees the data structures and the bounce buffer.
+
+\subsection*{Some thoughts for further optimization}
+
+As SG mode and CATU mode both support scatter-gather pages, the ETR driver can be improved to allow the hardware directly to access AUX ring buffer; this can remove the redundant operations caused by the bounce buffer, the benefit is this can avoid the extra memory copying from the bounce buffer to the AUX buffer.
+
+The second suggestion is to use normal memory mapping for the flat mode.  Rather than using the DMA mapping, the normal mapping can utilize the cache for memory performance boosting.  Though the memory size in flat mode is not big with several megabytes, but the performance improvement for memory copying with cacheable is still considerable.  And given this overload is caused by the tool, the optimization can avoid the noise for the profiling.
+
+A potential minor improvement is we can consider to remove the field \code{etr\_perf\_buffer::head}, this field can be replaced by using\\ \code{perf\_output\_handle::head}.
 
 \end{document}
