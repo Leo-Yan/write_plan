@@ -1000,10 +1000,10 @@ At the end of perf session, \code{etm\_free\_aux()} frees the data structures an
 
 \subsection*{Some thoughts for further optimization}
 
-As SG mode and CATU mode both support scatter-gather pages, the ETR driver can be improved to allow the hardware directly to access AUX ring buffer; this can remove the redundant operations caused by the bounce buffer, the benefit is this can avoid the extra memory copying from the bounce buffer to the AUX buffer.
+As SG mode and CATU mode both support scatter-gather pages, the ETR driver can be improved to allow the hardware directly accessing AUX ring buffer; this can remove the redundant operations caused by the bounce buffer, the benefit is this can avoid the extra memory copying from the bounce buffer to the AUX buffer.
 
-The second suggestion is to use normal memory mapping for the flat mode.  Rather than using the DMA mapping, the normal mapping can utilize the cache for memory performance boosting.  Though the memory size in flat mode is not big with several megabytes, but the performance improvement for memory copying with cacheable is still considerable.  And given this overload is caused by the tool, the optimization can avoid the noise for the profiling.
+The second suggestion is to use normal memory mapping for the flat mode.  Rather than using the DMA mapping, the normal mapping can utilize the cache for boosting memory performance.  Though the memory size in flat mode is not so big with several megabytes, the performance improvement for memory copying with cacheable is still considerable.  And given this overload is caused by the tool itself, the optimization can avoid the noise for the profiling.
 
-A potential minor improvement is we can consider to remove the field \code{etr\_perf\_buffer::head}, this field can be replaced by using\\ \code{perf\_output\_handle::head}.
+A potential minor improvement is to remove \code{etr\_perf\_buffer::head}, this field can be replaced by using \code{perf\_output\_handle::head} which contains the header for AUX ring buffer.
 
 \end{document}
