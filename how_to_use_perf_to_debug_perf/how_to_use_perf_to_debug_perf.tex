@@ -17,6 +17,7 @@
 
 \usepackage{listings}
 \usepackage{tikz}
+\usepackage{hyperref}
 \usetikzlibrary{positioning}
 \usetikzlibrary{arrows}
 
@@ -88,7 +89,7 @@ making it a common practice to debug perf in everyday life.
 This article explores various debugging techniques, organized from simple to
 complex, with using the perf tool as the target program. As it explores these
 debugging methods, the attention is directed towards the perf as debugging
-tool. Ultimately, the article explains why and how to use perf to debug perf.
+tool. Ultimately, the article explains how to use perf to debug perf.
 \end{abstract}
 
 \hspace*{3.6mm}\textit{Keywords: Linux, debug, ftrace, kprobe, uprobe, perf } % Keywords
@@ -100,22 +101,21 @@ tool. Ultimately, the article explains why and how to use perf to debug perf.
 
 First of all, this article has no plan to address traditional debuggers, e.g.
 GDB or JTAG based debuggers. These tools use stop-the-world method to debug
-programs: it firstly stops its target program, then it takes chance to check
-the context. The \textit{context} can be a software concept, e.g. a thread or
-task context, a debugger can read variables from the task's stack or heap. The
-\textit{context} can be a hardware context - when a developer is using JTAG
-debugger to connect hardware and stop CPU, the hardware registers and memory
-can be reviewed.
+programs: it firstly stops a target program, then it takes chance to check
+the context for the program. The \textit{context} can be a software concept,
+e.g. a thread or task context, a debugger can read variables from the task's
+stack or heap. The \textit{context} can be a hardware context as well - when
+a developer is using JTAG debugger to connect hardware and stop CPU, the
+hardware registers and memory can be reviewed.
 
 The purpose of this documentation is to discuss tools which can provide
 tracing capability in runtime. The trace data is recorded in certain format
-and afterwards developers can use it for analysis program's flow and data
-values.
+for afterwards analysis.
 
-The content is divided to four sections:
+The content is divided into four sections:
 \begin{itemize}
 	\item Printing;
-	\item Debugging with Ftrace;
+	\item Debugging with ftrace;
 	\item Dynamic tracing;
 	\item Using perf for debugging.
 \end{itemize}
@@ -134,18 +134,17 @@ int main(void)
 }
 \end{lstlisting}
 
-The above code introduces a handy tracing tool: libc's \code{printf()}. Then,
-when starting to access the Linux kernel, its equivalent function
-\code{printk()} will no longer be strange.
+The above code implicitly introduces a handy tracing tool: libc's
+\code{printf()}. Then, when starting to access the Linux kernel, its
+equivalent function \code{printk()} will no longer be strange.
 
 A printing log means an event has occurred, alongside variables can be printed
 out - this is perfect to act as tracing.
 
-The printing is reliable in most cases. \code{printk()} can be used safely in
-any of contexts without locking in the Linux kernel. This is why even if a
-developer has no knowledge for interrupt context, thread context and
-bottom-half context (e.g. running in softirq or tasklet), printing still can
-work well as a main debugging method.
+The printing is reliable in most cases. \code{printk()} is a context safe API
+- even if a developer has no knowledge for interrupt context, thread context
+and bottom-half context (e.g. in softirq or tasklet), printing still can work
+as a main debugging method.
 
 On the other hand, developers need to tolerate cons introduced by printing.
 If logs are output into the UART console, developers suffer performance
@@ -153,60 +152,78 @@ penalty caused by the low speed of the UART port. In a worse case, the
 printing can alter program flow and might lead to the timing issues hardly to
 be reproduced.
 
-Furthermore, it becomes challenging for using printing to debug a program
-which crosses both user space and kernel space. The reason is the
-\code{printf()} and \code{printk()} functions store logs in separate buffers,
-leading to logs being output in an out-of-order format and not readable.
+It becomes challenging for using printing to debug a program which crosses
+both user space and kernel space. The reason is \code{printf()} and
+\code{printk()} store logs in separate buffers, leading to logs being output
+in out-of-order without readable.
 
-To resolve this issue, syslog is suggested. A user space program needs to use
-\code{syslog()} to replace \code{printf()} for routing logs into syslog
-service, as result, all modules supporting syslog can output logs into a
+To resolve this issue, syslog is suggested. A program needs to use
+\code{syslog()} to replace \code{printf()} for routing logs to syslog
+service, all modules supporting syslog in system can output logs into a
 central place. Unfortunately, syslog is not supported in every Linux system,
-and many programs (including the perf) doesn't support syslog.
+and many programs (including the perf) don't support syslog at all.
 
-\subsection*{Debugging with Ftrace}
+\subsection*{Debugging with ftrace}
 
-Perf profiles programs with different modes: per thread mode, per cpu mode, and system wide mode; the question is how the ring buffer is organized for these modes. This section describes what's exactly these modes and how the ring buffer can meet the requirement for them; at last we can review if there have any race conditions for the ring buffer caused in these modes.
+If we are looking for a better debugging tool with lower performance penalties
+and support for tracing in both user space and kernel space, ftrace appears as
+a promising candidate.
 
-\subsubsection*{Per thread mode}
+Firstly, ftrace uses a ring buffer to store trace data, allowing users to save
+the trace data into a file for testing and then perform post-analysis. This
+approach enables ftrace to avoid the tracing latency caused by console, unlike
+printing.
 
-For the per-thread mode, by specifying option \code{----per--thread} in perf command, the ring buffer is allocated for every profiled thread.  In this mode when the profiled thread is scheduled on a CPU, the events on that CPU will be enabled; and if the thread is cheduled out from the CPU, the events on the CPU will be disabled.  And if the thread is migrated from one CPU to another CPU, the events will be disabled on the previous CPU and enabled on the next CPU correspondingly.
+Secondly, ftrace supports both kernel and user space. The entire trace data is
+recorded in a single file and displayed in a time-ordered format, thus the
+output result is friendly for review.
 
-\begin{center}
-\par
-\begin{tikzpicture}[>=latex,font=\sffamily,semithick,scale=1.75]
-	\node [minimum width=2.5cm,minimum height=.5cm,outer sep=0pt] at (0,0) (cpu0) {\( CPU_0 \)};
-	\node [minimum width=1cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=blue!25,right=0cm of cpu0] at (cpu0.east) (cpu0_p1_0) {\(T_{1}\)};
-	\node [minimum width=1cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=blue!25,right=7cm of cpu0] (cpu0_p1_1) {\(T_{1}\)};
-	\draw[->] (cpu0.south east) -- +(5cm,0);
+\subsubsection*{Printing in ftrace}
 
-	\node [minimum width=2.5cm,minimum height=.5cm,outer sep=0pt,below=.5cm of cpu0] (cpu1) {\(CPU_{1}\)};
-	\node [minimum width=1cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=blue!25,right=1cm of cpu1] at (cpu1.east) (cpu1_p1_0) {\(T_{1}\)};
-	\draw[->] (cpu1.south east) -- +(5cm,0);
+Printing is supported in ftrace.
 
-	\node [minimum width=2.5cm,minimum height=.5cm,outer sep=0pt,below=.5cm of cpu1] (cpu2) {\(CPU_{2}\)};
-	\node [minimum width=1cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=blue!25,right=4cm of cpu2] (cpu2_p1_0) {\(T_{1}\)};
-	\node [minimum width=2cm,minimum height=.6cm,outer sep=0pt,draw=black,fill=white,dotted,right=5cm of cpu2] (cpu2_p1_1) { sleep };
-	\draw[->] (cpu2.south east) -- +(5cm,0);
+In the kernel, \code{trace\_printk()} is used to output logs into the ftrace
+ring buffer. Once you use it, you will find this API quite useful: logs saved
+in ftrace buffer will not be bothered by console's long latency, and by
+enlarging buffer size, you will have sufficient capacity to store extensive
+logs. These logs will not flood the console immediately, you can extract logs
+into file whenever you want to parse them.
 
-	\node [minimum width=2.5cm,minimum height=.5cm,outer sep=0pt,below=.5cm of cpu2] (cpu3) {\(CPU_{3}\)};
-	\node [minimum width=2cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=blue!25,right=2cm of cpu3] (cpu3_p1_0) {\(T_{1}\)};
-	\draw[->] (cpu3.south east) -- +(5cm,0);
+Ftrace provides a sysfs node called \code{trace\_marker} that allows the user
+space to place logs into ftrace buffer. Through this interface, user space
+events and kernel events can be synchronized together, thus developers can
+understand a flow spanning the two spaces.
 
-	\node [minimum width=2.5cm,minimum height=.5cm,outer sep=0pt,below=.5cm of cpu3] (rb) {Ring buffer};
-	\node [minimum width=8cm,minimum height=.5cm,outer sep=0pt,draw=black,fill=green!25,right=0cm of rb] (rb_0) {};
+The kernel's documentation \code{Documentation/trace/ftrace.rst} gives an
+example for how to write string into the \code{trace\_marker} node in C code:
 
-	\draw[->,dotted] (cpu0_p1_0.south) -- (cpu0_p1_0.south|-rb_0.north);
-	\draw[->,dotted] (cpu1_p1_0.south) -- (cpu1_p1_0.south|-rb_0.north);
-	\draw[->,dotted] (cpu2_p1_0.south) -- (cpu2_p1_0.south|-rb_0.north);
-	\draw[->,dotted] (cpu3_p1_0.south) -- (cpu3_p1_0.south|-rb_0.north);
-	\draw[->,dotted] (cpu0_p1_1.south) -- (cpu0_p1_1.south|-rb_0.north);
-\end{tikzpicture}
-\par
-\textbf{Figure 3: Ring buffer for per-thread mode}
-\end{center}
+\begin{lstlisting}
+trace_fd = open("trace_marker", O_WRONLY);
 
-As shown in the figure 3, when perf runs in per-thread mode, a ring buffer is allocated for the profiled thread \(T_{1}\).  The ring buffer is dedicated for the thread \(T_{1}\), and no matter the thread is scheduled on which CPUs.  If the thread \(T_{1}\) is running, the perf events will be recorded into the ring buffer; during the thread's sleeping period, all associated events will be disabled, thus the ring buffer will not record any trace data.
+void trace_write(const char *fmt, ...)
+{
+        va_list ap;
+        char buf[256];
+        int n;
+
+        if (trace_fd < 0)
+                return;
+
+        va_start(ap, fmt);
+        n = vsnprintf(buf, 256, fmt, ap);
+        va_end(ap);
+
+        write(trace_fd, buf, n);
+}
+\end{lstlisting}
+
+A typical use case for \code{trace\_marker} is found in
+\href{https://perfetto.dev/docs/data-sources/atrace}{ATrace}, which is a
+part of Google's \href{https://ui.perfetto.dev/}{Perfetto} tool. Perfetto
+is widely used for profiling Android UI performance and depends on the
+ATrace to trace application events - the \code{trace\_marker} is the
+underlying mechanism for tracing. While this article will remain on
+fundamental debugging tools, it will not dive into ATrace's details.
 
 \subsubsection*{Per CPU mode}
 
