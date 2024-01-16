@@ -194,17 +194,22 @@ logs into ftrace buffer. Through this interface, user space events and kernel
 events can be synchronized together, thus developers can understand a flow
 spanning the two spaces. The kernel documentation
 \code{Documentation/trace/ftrace.rst} gives an example for how to write a log
-into the \code{trace\_marker} node in C code:
+into the \code{trace\_marker} node in C code, below code is with a bit
+tweaking for easier calling.
 
 \begin{lstlisting}
-trace_fd = open("trace_marker", O_WRONLY);
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
-void trace_write(const char *fmt, ...)
+static void trace_write(const char *fmt, ...)
 {
         va_list ap;
         char buf[256];
-        int n;
+        int trace_fd, n;
 
+        trace_fd = open("/sys/kernel/debug/tracing/trace_marker",
+                          O_WRONLY);
         if (trace_fd < 0)
                 return;
 
@@ -226,7 +231,237 @@ basic tools, it will not dive into ATrace's details.
 
 \subsubsection*{Debugging perf with ftrace}
 
-After a rough introduction for printing in ftrace, now it's a good time point
-to apply it to debug perf.
+Now it's a good time point for us to apply ftrace for debugging.
+
+The following experiment is to debug the AUX buffer of perf. The AUX buffer is
+a ring buffer designed to store hardware tracing data from components such as
+Arm CoreSight, Intel PT, etc. The kernel writes data into the buffer, then
+the perf tool reads out data from the buffer.
+
+Sometimes, we need to inspect how the buffer is consumed. The kernel calls the
+\code{perf\_aux\_output\_end()} function to update the head of the buffer and
+send a notification to user space. The buffer's overwrite mode is only used
+for snapshot mode. For simplicity, we can ignore it and solely focus on the
+normal case from line 493 to line 498.
+
+In the code below, line 496 saves the old head value into \code{aux\_head}; in
+line 497, \code{rb->aux\_head} is updated as a new head by adding the
+\code{size} to the old head. For debugging purpose, lines 500 and 501 are
+added to print the old head, the new head and the size into ftrace.
+
+\begin{lstlisting}[
+  basicstyle=\fontsize{8}{9}\selectfont\ttfamily
+]
+481 void perf_aux_output_end(struct perf_output_handle *handle, unsigned long size)
+482 {
+483         bool wakeup = !!(handle->aux_flags & PERF_AUX_FLAG_TRUNCATED);
+484         struct perf_buffer *rb = handle->rb;
+485         unsigned long aux_head;
+486 
+487         /* in overwrite mode, driver provides aux_head via handle */
+488         if (rb->aux_overwrite) {
+489                 handle->aux_flags |= PERF_AUX_FLAG_OVERWRITE;
+490 
+491                 aux_head = handle->head;
+492                 rb->aux_head = aux_head;
+493         } else {
+494                 handle->aux_flags &= ~PERF_AUX_FLAG_OVERWRITE;
+495 
+496                 aux_head = rb->aux_head;
+497                 rb->aux_head += size;
+498         }
+499 
+500         trace_printk("old_head=0x%lx new_head=0x%lx size=0x%lx\n",
+501                      aux_head, rb->aux_head, size);
+            ...
+535 }
+\end{lstlisting}
+
+The perf tool in user space calls \code{auxtrace\_mmap\_\_read\_head()} to
+retrieve the latest head of the buffer. From lines 1869 to 1875, it handles
+the overflow case by using a mask or dividing by the buffer length. Finally,
+a delta between the old head and the new head is calculated, taking into
+account any wrapping around, which is accomplished between line 1877 and
+line 1880.
+
+It already contains debugging code at line 1866 for printing logs, but it
+only outputs messages to the terminal or log file, we have no chance to print
+them with kernel logs together.  This is why the \code{trace\_write()}
+function at line 1882 is added to write logs into the ftrace buffer via the
+\code{trace\_maker} interface.
+
+\begin{lstlisting}[
+  basicstyle=\fontsize{8}{9}\selectfont\ttfamily
+]
+1844 static int __auxtrace_mmap__read(struct mmap *map,
+1845                                  struct auxtrace_record *itr,
+1846                                  struct perf_tool *tool, process_auxtrace_t fn,
+1847                                  bool snapshot, size_t snapshot_size)
+1848 {
+1849         struct auxtrace_mmap *mm = &map->auxtrace_mmap;
+1850         u64 head, old = mm->prev, offset, ref;
+1851         unsigned char *data = mm->base;
+1852         size_t size, head_off, old_off, len1, len2, padding;
+1853         union perf_event ev;
+1854         void *data1, *data2;
+1855         int kernel_is_64_bit = perf_env__kernel_is_64_bit(evsel__env(NULL));
+1856
+1857         head = auxtrace_mmap__read_head(mm, kernel_is_64_bit);
+1858
+1859         if (snapshot &&
+1860             auxtrace_record__find_snapshot(itr, mm->idx, mm, data, &head, &old))
+1861                 return -1;
+1862
+1863         if (old == head)
+1864                 return 0;
+1865
+1866         pr_debug3("auxtrace idx %d old %#"PRIx64" head %#"PRIx64" diff %#"PRIx64"\n",
+1867                   mm->idx, old, head, head - old);
+1868
+1869         if (mm->mask) {
+1870                 head_off = head & mm->mask;
+1871                 old_off = old & mm->mask;
+1872         } else {
+1873                 head_off = head % mm->len;
+1874                 old_off = old % mm->len;
+1875         }
+1876
+1877         if (head_off > old_off)
+1878                 size = head_off - old_off;
+1879         else
+1880                 size = mm->len - (old_off - head_off);
+1881
+1882         trace_write("%s: old_offset=0x%lx head_offset=0x%lx size=0x%lx\n",
+1883                     __func__, old_off, head_off, size);
+            ...
+1957 }
+\end{lstlisting}
+
+Rebuild the Linux kernel and perf with the added printing code, reboot the
+system, and it will be ready for debugging. To prepare ftrace for a fresh
+context before running the test, you can use several commands:
+
+\begin{lstlisting}
+# Stop tracing
+echo 0 > /sys/kernel/debug/tracing/tracing_on
+
+# Cleanup ftrace data
+echo > /sys/kernel/debug/tracing/trace
+
+# Start tracing
+echo 1 > /sys/kernel/debug/tracing/tracing_on
+\end{lstlisting}
+
+Then, run the test and stop tracing:
+
+\begin{lstlisting}
+# Run test
+perf record -e cs_etm// -- ls
+
+# Stop tracing
+echo 0 > /sys/kernel/debug/tracing/tracing_on
+\end{lstlisting}
+
+At last, you can dump tracing log:
+
+\begin{lstlisting}[
+	breaklines=true
+]
+# Dump tracing data
+cat /sys/kernel/debug/tracing/trace
+
+# tracer: nop
+#
+# entries-in-buffer/entries-written: 7/7   #P:6
+#
+#                                _-----=> irqs-off/BH-disabled
+#                               / _----=> need-resched
+#                              | / _---=> hardirq/softirq
+#                              || / _--=> preempt-depth
+#                              ||| / _-=> migrate-disable
+#                              |||| /     delay
+#           TASK-PID     CPU#  |||||  TIMESTAMP  FUNCTION
+#              | |         |   |||||     |         |
+              ls-2041    [003] d..3.   220.497444: perf_aux_output_end: old_head=0x0 new_head=0xe26a0 size=0xe26a0
+              ls-2041    [003] d..3.   220.498274: perf_aux_output_end: old_head=0xe26a0 new_head=0xf0da0 size=0xe700
+              ls-2041    [003] d..3.   220.500091: perf_aux_output_end: old_head=0xf0da0 new_head=0xf61a0 size=0x5400
+              ls-2041    [003] d..3.   220.500743: perf_aux_output_end: old_head=0xf61a0 new_head=0x108080 size=0x11ee0
+              ls-2041    [003] d..3.   220.502813: perf_aux_output_end: old_head=0x108080 new_head=0x119dd0 size=0x11d50
+              ls-2041    [003] d..1.   220.508788: perf_aux_output_end: old_head=0x119dd0 new_head=0x1d5310 size=0xbb540
+            perf-2040    [002] .....   220.508985: tracing_mark_write: __auxtrace_mmap__read: old_offset=0x0 head_offset=0x1d5310 size=0x1d5310
+\end{lstlisting}
+
+Based on the log, we can know that the \code{perf\_aux\_output\_end()} function
+has been invoked multiple times in the kernel. In the end, the perf tool called
+\code{\_\_auxtrace\_mmap\_\_read()} once to read out all trace data from AUX
+buffer.
+
+The writing in the kernel and the reading in user space are not paired. It's
+apparent that the perf tool is not necessarily waken up every time the kernel
+stores trace data. We can easily verify this idea with scheduler tracepoint in
+ftrace, which will be discussed in the next section.
+
+\subsubsection*{Tracepoints in ftrace}
+
+The naming 'ftrace' is derived from 'function trace', users can enable
+function tracer or function graph tracer for function-based tracing. Over time,
+ftrace has extended to support more tracers, such as latency tracer, etc. The
+above log shows "tracer: nop", which means that no tracer is enabled.
+
+The Linux kernel provides tracepoints for debugging and profiling, which are
+predefined and called in the kernel source code. These are commonly known as
+"static tracepoints". After the system boots up, you can see the available
+tracepoints in the subfolder \code{events} or the node \code{available\_events}
+under the ftrace's debugfs folder.
+
+Ftrace can combine tracer, tracepoints, and printing together for debugging.
+
+In previous section, the trace is absent to show how the perf tool is waken
+up. By enabling the scheduler tracepoints, and combining with printing, we
+can get below logs:
+
+\begin{lstlisting}[
+	breaklines=true
+]
+# Enable scheduler tracepoints
+echo 1 > /sys/kernel/debug/tracing/events/sched/enable
+
+# Run test
+perf record -e cs_etm// -- ls
+
+# Stop tracing
+echo 0 > /sys/kernel/debug/tracing/tracing_on
+
+# Dump tracing data
+cat /sys/kernel/debug/tracing/trace
+
+#                                _-----=> irqs-off/BH-disabled
+#                               / _----=> need-resched
+#                              | / _---=> hardirq/softirq
+#                              || / _--=> preempt-depth
+#                              ||| / _-=> migrate-disable
+#                              |||| /     delay
+#           TASK-PID     CPU#  |||||  TIMESTAMP  FUNCTION
+#              | |         |   |||||     |         |
+...
+              ls-2660    [003] d..1.  4755.179918: perf_aux_output_end: old_head=0x11c460 new_head=0x21d7a0 size=0x101340
+              ls-2660    [003] d.h4.  4755.179979: sched_waking: comm=perf pid=2659 prio=120 target_cpu=001
+          <idle>-0       [001] dNh2.  4755.179998: sched_wakeup: comm=perf pid=2659 prio=120 target_cpu=001
+          <idle>-0       [001] d..2.  4755.180002: sched_switch: prev_comm=swapper/1 prev_pid=0 prev_prio=120 prev_state=R ==> next_comm=perf next_pid=2659 next_prio=120
+              ls-2660    [003] d.h2.  4755.180014: sched_stat_runtime: comm=ls pid=2660 runtime=4493620 [ns]
+            perf-2659    [001] .....  4755.180089: tracing_mark_write: __auxtrace_mmap__read: old_offset=0x0 head_offset=0x21d7a0 size=0x21d7a0
+\end{lstlisting}
+
+The logs show that the profiled program \(ls\) stored hardware tracing data
+into AUX buffer. Subsequently, it woke up the perf tool in the
+\code{sched\_waking} event. The \(CPU1\) was pulled out from idle, and the
+scheduler woke up the perf to run on it.
+
+\section*{Dynamic tracing}
+
+In the previous chapter, we saw that printing and tracepoints in ftrace are
+powerful for helping us to understand the code. However, it's not efficient,
+as we must rebuild the source code to add print sentences. We will explore
+more for dynamic tracing - add tracing without building code.
 
 \end{document}
