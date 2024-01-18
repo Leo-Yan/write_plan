@@ -194,8 +194,8 @@ logs into ftrace buffer. Through this interface, user space events and kernel
 events can be synchronized together, thus developers can understand a flow
 spanning the two spaces. The kernel documentation
 \code{Documentation/trace/ftrace.rst} gives an example for how to write a log
-into the \code{trace\_marker} node in C code, below code is with a bit
-tweaking for easier calling.
+into the \code{trace\_marker} node in C code. The code below is slightly
+tweaked for easier calling.
 
 \begin{lstlisting}
 #include <sys/types.h>
@@ -233,21 +233,23 @@ basic tools, it will not dive into ATrace's details.
 
 Now it's a good time point for us to apply ftrace for debugging.
 
-The following experiment is to debug the AUX buffer of perf. The AUX buffer is
-a ring buffer designed to store hardware tracing data from components such as
-Arm CoreSight, Intel PT, etc. The kernel writes data into the buffer, then
-the perf tool reads out data from the buffer.
+The following experiment is to inspect how the AUX buffer is consumed in perf.
+The AUX buffer is a ring buffer designed to store hardware trace data from
+components such as Arm CoreSight, Intel PT, etc.
 
-Sometimes, we need to inspect how the buffer is consumed. The kernel calls the
+After the trace data has been filled by a hardware IP, the kernel calls the
 \code{perf\_aux\_output\_end()} function to update the head of the buffer and
-send a notification to user space. The buffer's overwrite mode is only used
-for snapshot mode. For simplicity, we can ignore it and solely focus on the
-normal case from line 493 to line 498.
+send a notification to user space.
 
-In the code below, line 496 saves the old head value into \code{aux\_head}; in
-line 497, \code{rb->aux\_head} is updated as a new head by adding the
-\code{size} to the old head. For debugging purpose, lines 500 and 501 are
-added to print the old head, the new head and the size into ftrace.
+In the code piece below, the buffer supports two modes: overwrite mode and
+normal mode. The overwrite mode is used for snapshots. For simplicity in
+explanation, we solely focus on the normal mode from line 493 to line 498.
+Line 496 saves the old head value into the \code{aux\_head} variable; in line
+497, \code{rb->aux\_head} is updated as a new head by adding the \code{size}
+to the old head.
+
+We add tracing code in lines 500 and 501 to print the old head, the new head
+and the size into ftrace.
 
 \begin{lstlisting}
 481 void perf_aux_output_end(struct perf_output_handle *handle, unsigned long size)
@@ -276,14 +278,14 @@ added to print the old head, the new head and the size into ftrace.
 \end{lstlisting}
 
 The perf tool in user space calls \code{auxtrace\_mmap\_\_read\_head()} to
-retrieve the latest head of the buffer. From lines 1869 to 1875, it handles
-the overflow case by using a mask or dividing by the buffer length. Finally,
-a delta between the old head and the new head is calculated, taking into
-account any wrapping around, which is accomplished between line 1877 and
-line 1880.
+retrieve the latest head of the buffer. As shown from lines 1869 to 1875 in
+the below code, it handles the overflow case by using a mask or dividing by
+the buffer length. Finally, a delta between the old head and the new head is
+calculated, taking into account any wrapping around, which is accomplished
+between line 1877 and line 1880.
 
 It already contains debugging code at line 1866 for printing logs, but it
-only outputs messages to the terminal or log file, we have no chance to print
+only outputs messages to a terminal or a log file, we have no chance to print
 them with kernel logs together.  This is why the \code{trace\_write()}
 function at line 1882 is added to write logs into the ftrace buffer via the
 \code{trace\_maker} interface.
@@ -414,12 +416,9 @@ the system boots up, you can see the available tracepoints in the subfolder
 \code{events} under the ftrace's debugfs folder.
 
 More importantly, ftrace can combine printing, tracers, and tracepoints
-together for debugging.
-
-We can recall the previous section was absent to show how the perf tool is
-waken up in the test, the scheduler tracepoints can help us to easily
-understand scheduling behaviours. By enabling the tracepoints, we get below
-logs:
+together for debugging. The previous section was absent to show how the perf
+tool is waken up in the test, the scheduler tracepoints can help us to easily
+understand scheduling behaviours. By enabling the tracepoints, we get logs:
 
 \begin{lstlisting}[
   	language=sh,
@@ -489,7 +488,11 @@ data. The original instruction is copied to somewhere for single-step
 execution.
 
 Ftrace provides \(kprobe\) and \(uprobe\) for adding probe in the kernel and
-user space respectively. The later sections will demonstrate how to use them.
+user space respectively. We will see demonstrations of how to use them.
+
+\subsubsection*{Adding probe in the kernel}
+
+\subsubsection*{Adding probe in user space}
 
 \begin{lstlisting}[
   	language=sh,
@@ -530,5 +533,6 @@ cat trace
               ls-3480    [005] d..1. 13312.460459: myprobe1: (perf_aux_output_end+0x12c/0x138) new_head=0x243560 old_head=0x1ac6e0 size=0x96e80
             perf-3479    [002] DNZff 13312.460598: p_perf_0x2079e0: (0xaaaad0f979e0) old_off=0x0 head_off=0x243560 size=0x243560
 \end{lstlisting}
+
 
 \end{document}
