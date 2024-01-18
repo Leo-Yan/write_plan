@@ -27,7 +27,7 @@
   belowskip=3mm,
   showstringspaces=false,
   columns=flexible,
-  basicstyle={\small\ttfamily},
+  basicstyle=\fontsize{8}{9}\selectfont\ttfamily,
   numbers=none,
   numberstyle=\tiny\color{gray},
   keywordstyle=\color{blue},
@@ -249,9 +249,7 @@ line 497, \code{rb->aux\_head} is updated as a new head by adding the
 \code{size} to the old head. For debugging purpose, lines 500 and 501 are
 added to print the old head, the new head and the size into ftrace.
 
-\begin{lstlisting}[
-  basicstyle=\fontsize{8}{9}\selectfont\ttfamily
-]
+\begin{lstlisting}
 481 void perf_aux_output_end(struct perf_output_handle *handle, unsigned long size)
 482 {
 483         bool wakeup = !!(handle->aux_flags & PERF_AUX_FLAG_TRUNCATED);
@@ -290,9 +288,7 @@ them with kernel logs together.  This is why the \code{trace\_write()}
 function at line 1882 is added to write logs into the ftrace buffer via the
 \code{trace\_maker} interface.
 
-\begin{lstlisting}[
-  basicstyle=\fontsize{8}{9}\selectfont\ttfamily
-]
+\begin{lstlisting}
 1844 static int __auxtrace_mmap__read(struct mmap *map,
 1845                                  struct auxtrace_record *itr,
 1846                                  struct perf_tool *tool, process_auxtrace_t fn,
@@ -338,10 +334,15 @@ function at line 1882 is added to write logs into the ftrace buffer via the
 \end{lstlisting}
 
 Rebuild the Linux kernel and perf with the added printing code, reboot the
-system, and it will be ready for debugging. To prepare ftrace for a fresh
-context before running the test, you can use several commands:
+system, then it will be ready for debugging.
 
-\begin{lstlisting}
+To prepare a fresh context for ftrace before running the test, you can use
+several commands:
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
 # Stop tracing
 echo 0 > /sys/kernel/debug/tracing/tracing_on
 
@@ -365,6 +366,7 @@ echo 0 > /sys/kernel/debug/tracing/tracing_on
 At last, you can dump tracing log:
 
 \begin{lstlisting}[
+  	language=sh,
 	breaklines=true
 ]
 # Dump tracing data
@@ -391,36 +393,36 @@ cat /sys/kernel/debug/tracing/trace
             perf-2040    [002] .....   220.508985: tracing_mark_write: __auxtrace_mmap__read: old_offset=0x0 head_offset=0x1d5310 size=0x1d5310
 \end{lstlisting}
 
-Based on the log, we can know that the \code{perf\_aux\_output\_end()} function
-has been invoked multiple times in the kernel. In the end, the perf tool called
-\code{\_\_auxtrace\_mmap\_\_read()} once to read out all trace data from AUX
-buffer.
-
-The writing in the kernel and the reading in user space are not paired. It's
-apparent that the perf tool is not necessarily waken up every time the kernel
-stores trace data. We can easily verify this idea with scheduler tracepoint in
-ftrace, which will be discussed in the next section.
+The logs show that the \code{perf\_aux\_output\_end()} function has been
+invoked multiple times in the kernel. The perf tool called
+\code{\_\_auxtrace\_mmap\_\_read()} once to read out all trace data from the AUX
+buffer. The writing to the AUX buffer in the kernel and the reading in user
+space are not paired. It's apparent that the perf tool is not necessarily woken
+up every time the kernel stores trace data. Nonetheless, we still don't
+know the scheduling within this flow, which will be discussed soon.
 
 \subsubsection*{Tracepoints in ftrace}
 
 The naming 'ftrace' is derived from 'function trace', users can enable
 function tracer or function graph tracer for function-based tracing. Over time,
-ftrace has extended to support more tracers, such as latency tracer, etc. The
-above log shows "tracer: nop", which means that no tracer is enabled.
+ftrace has extended to support latency tracer for profiling scheduling latency.
+In the log above, \code{"tracer:\ nop"} indicates that no tracer is enabled.
 
-The Linux kernel provides tracepoints for debugging and profiling, which are
-predefined and called in the kernel source code. These are commonly known as
-"static tracepoints". After the system boots up, you can see the available
-tracepoints in the subfolder \code{events} or the node \code{available\_events}
-under the ftrace's debugfs folder.
+Furthermore, ftrace provides tracepoints which are predefined and invoked in
+the kernel. These are commonly known as "static tracepoints". After
+the system boots up, you can see the available tracepoints in the subfolder
+\code{events} under the ftrace's debugfs folder.
 
-Ftrace can combine tracer, tracepoints, and printing together for debugging.
+More importantly, ftrace can combine printing, tracers, and tracepoints
+together for debugging.
 
-In previous section, the trace is absent to show how the perf tool is waken
-up. By enabling the scheduler tracepoints, and combining with printing, we
-can get below logs:
+We can recall the previous section was absent to show how the perf tool is
+waken up in the test, the scheduler tracepoints can help us to easily
+understand scheduling behaviours. By enabling the tracepoints, we get below
+logs:
 
 \begin{lstlisting}[
+  	language=sh,
 	breaklines=true
 ]
 # Enable scheduler tracepoints
@@ -453,15 +455,80 @@ cat /sys/kernel/debug/tracing/trace
 \end{lstlisting}
 
 The logs show that the profiled program \(ls\) stored hardware tracing data
-into AUX buffer. Subsequently, it woke up the perf tool in the
-\code{sched\_waking} event. The \(CPU1\) was pulled out from idle, and the
-scheduler woke up the perf to run on it.
+into AUX buffer. Then it woke up the perf tool in the \code{sched\_waking}
+event. Afterwards, the \(CPU1\) was pulled out from idle, and the scheduler
+placed the perf to run on it. We can know that the \(ls\) program and the
+perf running on two different CPUs, so that avoid performance degradation
+due to parallel execution during profiling.
+
+In this section, the printing and static tracepoints in ftrace have shown
+their power. However, they are not efficient, as we must rebuild the source
+code to add tracing. We will explore dynamic tracing to add tracepoints on the
+fly.
 
 \section*{Dynamic tracing}
 
-In the previous chapter, we saw that printing and tracepoints in ftrace are
-powerful for helping us to understand the code. However, it's not efficient,
-as we must rebuild the source code to add print sentences. We will explore
-more for dynamic tracing - add tracing without building code.
+If you have experience with debugger, an often used feature is breakpoint. You
+select a code line, set a breakpoint, and then kick off the program to run.
+When the program reaches the breakpoint, it halts, and the debugger takes
+over control. At this point, since the program is stopped, you can take your
+time to read variables, review memory content, and dump CPU general registers.
+
+A subtle aspect of a breakpoint is it can be set as either a hardware
+breakpoint or a software breakpoint. A hardware breakpoint is to set an
+address in the CPU's debug register, while a software breakpoint uses the
+break instruction (the Arm instruction is \code{BRK}) to replace an
+original instruction at the specified address. Both methods ultimately
+interrupt the program execution and transfer control to the debugger for
+further inspection.
+
+We can take dynamic tracing as a self-hosted debugger, often referred to as
+\(probe\) in Linux. When we add a probe, a break instruction is injected into
+a specified address, and an event is attached to it for accessing additional
+data. The original instruction is copied to somewhere for single-step
+execution.
+
+Ftrace provides \(kprobe\) and \(uprobe\) for adding probe in the kernel and
+user space respectively. The later sections will demonstrate how to use them.
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
+cd /sys/kernel/debug/tracing/
+echo 'p:myprobe 0xffff8000802a100c new_head=%x0:x64 \
+       old_head=%x1:x64 size=%x2:x64' > kprobe_events
+echo 'p:myprobe perf_aux_output_end+0x12c new_head=%x0:x64 \
+       old_head=%x1:x64 size=%x2:x64' > kprobe_events
+echo 'p:myprobe perf_aux_output_end+0x12c new_head=%x0:x64 \
+       old_head=+144(%x20):x64 size=%x2:x64' > kprobe_events
+
+echo 1 > events/kprobes/myprobe1/enable
+
+echo 'p /mnt/linux-kernel/linux-cs-dev/tools/perf/perf:0x2079e0 old_off=+128(%sp):x64 head_off=+120(%sp):x64 size=+112(%sp):x64' > uprobe_events
+
+echo 1 > events/uprobes/p_perf_0x2079e0/enable
+
+cat trace
+# tracer: nop
+#
+# entries-in-buffer/entries-written: 7/7   #P:6
+#
+#                                _-----=> irqs-off/BH-disabled
+#                               / _----=> need-resched
+#                              | / _---=> hardirq/softirq
+#                              || / _--=> preempt-depth
+#                              ||| / _-=> migrate-disable
+#                              |||| /     delay
+#           TASK-PID     CPU#  |||||  TIMESTAMP  FUNCTION
+#              | |         |   |||||     |         |
+              ls-3480    [005] d..3. 13312.444215: myprobe1: (perf_aux_output_end+0x12c/0x138) new_head=0xd71f0 old_head=0x0 size=0xd71f0
+              ls-3480    [005] d..3. 13312.444779: myprobe1: (perf_aux_output_end+0x12c/0x138) new_head=0xe22a0 old_head=0xd71f0 size=0xb0b0
+              ls-3480    [005] d..3. 13312.446907: myprobe1: (perf_aux_output_end+0x12c/0x138) new_head=0xf2950 old_head=0xe22a0 size=0x106b0
+              ls-3480    [005] d..3. 13312.449854: myprobe1: (perf_aux_output_end+0x12c/0x138) new_head=0x10e470 old_head=0xf2950 size=0x1bb20
+              ls-3480    [005] d..3. 13312.456476: myprobe1: (perf_aux_output_end+0x12c/0x138) new_head=0x1ac6e0 old_head=0x10e470 size=0x9e270
+              ls-3480    [005] d..1. 13312.460459: myprobe1: (perf_aux_output_end+0x12c/0x138) new_head=0x243560 old_head=0x1ac6e0 size=0x96e80
+            perf-3479    [002] DNZff 13312.460598: p_perf_0x2079e0: (0xaaaad0f979e0) old_off=0x0 head_off=0x243560 size=0x243560
+\end{lstlisting}
 
 \end{document}
