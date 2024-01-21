@@ -617,7 +617,7 @@ buffer head stored into the register \code{x0}. This is accomplished
 at \code{0xffff8000802a1008}.
 
 The sequential address \code{0xffff8000802a100c} would be a good trace point,
-with reading \code{x0} for the new head, \code{x1} for the old head and
+with reading \code{x0} for the new head, \code{x1} for the old head, and
 \code{x2} for the filled data size. We can add a probe with the command:
 
 \begin{lstlisting}[
@@ -625,8 +625,35 @@ with reading \code{x0} for the new head, \code{x1} for the old head and
 	breaklines=true
 ]
 cd /sys/kernel/debug/tracing/
-echo 'p:myprobe 0xffff8000802a100c new_head=%x0:x64 
+echo 'p:myprobe 0xffff8000802a100c new_head=%x0:x64 old_head=%x1:x64 size=%x2:x64' \
+       > kprobe_events
+\end{lstlisting}
+
+We can use the 'function name + offset' format to replace the arbitrary
+address for specifying a probe address. This is more readable and avoids
+concerns about address alterations caused by a rebuild:
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
+echo 'p:myprobe perf_aux_output_end+0x12c new_head=%x0:x64 \
        old_head=%x1:x64 size=%x2:x64' > kprobe_events
+\end{lstlisting}
+
+Moreover, the probe supports syntax for fetching memory with the fetch
+register with an offset (the offset can be plus \code{+} or minus \code{-}).
+In above case, the old head is loaded into \code{x1} from the address pointed
+by \code{x20} plus \code{144}. Rather than accessing the register
+\code{x1}, we can use \code{'+144(\%x20)'} for retrieving the old head.
+Therefore, the probe command can be updated as:
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
+echo 'p:myprobe perf_aux_output_end+0x12c new_head=%x0:x64 \
+       old_head=+144(%x20):x64 size=%x2:x64' > kprobe_events
 \end{lstlisting}
 
 \subsubsection*{Adding probe in user space}
