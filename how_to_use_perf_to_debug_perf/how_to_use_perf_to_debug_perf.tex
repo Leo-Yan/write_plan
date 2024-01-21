@@ -400,7 +400,7 @@ invoked multiple times in the kernel. The perf tool called
 \code{\_\_auxtrace\_mmap\_\_read()} once to read out all trace data from the AUX
 buffer. The writing to the AUX buffer in the kernel and the reading in user
 space are not paired. It's apparent that the perf tool is not necessarily woken
-up every time the kernel stores trace data. Nonetheless, we still don't
+up every time the kernel stores trace data. Nevertheless, we still don't
 know the scheduling within this flow, which will be discussed soon.
 
 \subsubsection*{Tracepoints in ftrace}
@@ -491,6 +491,143 @@ Ftrace provides \(kprobe\) and \(uprobe\) for adding probe in the kernel and
 user space respectively. We will see demonstrations of how to use them.
 
 \subsubsection*{Adding probe in the kernel}
+
+The kprobe provides the sysfs node \code{kprobe\_events} under the
+ftrace's umbrella for adding dynamic tracepoints.
+
+Adding a probe requires specifying two things: the probed address and the
+inspected data. The file \code{Documentation/trace/kprobetrace.rst}
+in the kernel tree explains the kprobe syntax.
+
+An obstacle for using kprobe is figuring out an appropriate address and
+mapping the interested variables to where they are stored. For example, it's
+not difficult to trace a function's entry or return, but it would not be
+straightforward to decide which address should be traced if intending to
+observe in the middle of the function. Arguments or local variables might be
+stored in general registers or in the stack, and it's possible that a
+variable is located in the heap.
+
+Therefore, to lower the barrier for applying kprobe, we need to understand how
+a Linux kernel image is compiled. We can disassemble a kernel ELF file with the
+\code{objdump} command. If you are working on a cross compilation environment
+for Arm64, use the command \code{aarch64-linux-gnu-objdump} instead. The
+command below uses two options for the disassembly: the option \code{-d} is
+for displaying assembler, and the option \code{-S} is for intermixing the
+source code with disassembly so we can connect C code with assembly
+instructions.
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
+aarch64-linux-gnu-objdump -S -d vmlinux > kernel.objdump
+\end{lstlisting}
+
+In addition to the knowledge of assembly language, understanding the
+general-purpose register usage in the procedure call is crucial for reading
+disassembly. The documentation
+\href{https://github.com/ARM-software/abi-aa/releases/download/2023Q3/aapcs64.pdf}{AAPCS64}
+defines the Procedure Call Standard for AArch64. Applying the mentioned
+knowledges, let’s take a closer look at the disassmebly of the
+\code{perf\_aux\_output\_end()} function.
+
+\begin{lstlisting}[
+	breaklines=true
+]
+ffff8000802a0ee0 <perf_aux_output_end>:
+ffff8000802a0ee0:	d503201f 	nop
+ffff8000802a0ee4:	d503201f 	nop
+{
+ffff8000802a0ee8:	d503233f 	paciasp
+ffff8000802a0eec:	a9bd7bfd 	stp	x29, x30, [sp, #-48]!
+ffff8000802a0ef0:	aa0103e2 	mov	x2, x1
+ffff8000802a0ef4:	910003fd 	mov	x29, sp
+ffff8000802a0ef8:	a90153f3 	stp	x19, x20, [sp, #16]
+ffff8000802a0efc:	aa0003f3 	mov	x19, x0
+ffff8000802a0f00:	f90013f5 	str	x21, [sp, #32]
+	struct perf_buffer *rb = handle->rb;
+ffff8000802a0f04:	f9400414 	ldr	x20, [x0, #8]
+	bool wakeup = !!(handle->aux_flags & PERF_AUX_FLAG_TRUNCATED);
+ffff8000802a0f08:	f9401000 	ldr	x0, [x0, #32]
+	if (rb->aux_overwrite) {
+ffff8000802a0f0c:	b940b681 	ldr	w1, [x20, #180]
+	bool wakeup = !!(handle->aux_flags & PERF_AUX_FLAG_TRUNCATED);
+ffff8000802a0f10:	12000015 	and	w21, w0, #0x1
+	if (rb->aux_overwrite) {
+ffff8000802a0f14:	34000741 	cbz	w1, ffff8000802a0ffc <perf_aux_output_end+0x11c>
+		aux_head = handle->head;
+ffff8000802a0f18:	f9401661 	ldr	x1, [x19, #40]
+		handle->aux_flags |= PERF_AUX_FLAG_OVERWRITE;
+ffff8000802a0f1c:	b27f0000 	orr	x0, x0, #0x2
+ffff8000802a0f20:	f9001260 	str	x0, [x19, #32]
+		rb->aux_head = aux_head;
+ffff8000802a0f24:	aa0103e0 	mov	x0, x1
+ffff8000802a0f28:	f9004a80 	str	x0, [x20, #144]
+
+...
+
+		handle->aux_flags &= ~PERF_AUX_FLAG_OVERWRITE;
+ffff8000802a0ffc:	927ef800 	and	x0, x0, #0xfffffffffffffffd
+ffff8000802a1000:	f9001260 	str	x0, [x19, #32]
+		aux_head = rb->aux_head;
+ffff8000802a1004:	f9404a81 	ldr	x1, [x20, #144]
+		rb->aux_head += size;
+ffff8000802a1008:	8b020020 	add	x0, x1, x2
+ffff8000802a100c:	17ffffc7 	b	ffff8000802a0f28 <perf_aux_output_end+0x48>
+ffff8000802a1010:	d503201f 	nop
+ffff8000802a1014:	d503201f 	nop
+
+ffff8000802a1018 <rb_alloc>:
+ffff8000802a1018:	d503201f 	nop
+ffff8000802a101c:	d503201f 	nop
+	page->mapping = NULL;
+	__free_page(page);
+}
+\end{lstlisting}
+
+As defined in AAPCS64, the registers \code{x0} - \code{x7} are used to pass
+function arguments. \code{perf\_aux\_output\_end()} has two arguments: the
+first one is an output handler, and the second one is the filled buffer
+size. When it is called, the registers \code{x0} and \code{x1} hold values for
+these two arguments, respectively. At the address \code{0xffff8000802a0ef0},
+the instruction is \code{"move x2, x1"}, which moves the register \code{x1}'s
+value into \code{x2}. Later in the function, the register \code{x2} holds the
+value for the \code{size} while \code{x1} is assigned to intermediate values.
+
+The register \code{x20} contains a pointer value pointing to structure
+\code{perf\_buffer}, it is assigned at \code{0xffff8000802a0f04}. Then, at
+\code{0xffff8000802a0f0c} the field \code{rb->aux\_overwrite} is loaded:
+since the flag has an offset of \code{180} in the structure, the instruction
+\code{"ldr w1, [x20, \#180]"} loads it into the register \code{w1}
+(using \code{w1} as target register means loading value into the \code{x1}
+with upper 4 bytes zeroed).
+
+At \code{0xffff8000802a0f14}, the instruction \code{"cbz w1, ffff8000802a0ffc"}
+compares the buffer mode. Now we are only interesed in the normal mode and
+\code{w1} is zero, as a result, the instruction  will jump to
+\code{0xffff8000802a0ffc}.
+
+From there, it sets the \code{handle->aux\_flags} and retrieves the old buffer
+head into the register \code{x1} at \code{0xffff8000802a1004} - the
+instruction is \code{"ldr x1, [x20, \#144]"}, \code{x20} is the pointer
+for the structure \code{perf\_buffer}, and \code{144} is the offset of the
+buffer's head in the structure. As we know, \code{x2} contains the written
+buffer size, and it is added to the old buffer head (\code{x1}) for a new
+buffer head stored into the register \code{x0}. This is accomplished
+at \code{0xffff8000802a1008}.
+
+The sequential address \code{0xffff8000802a100c} would be a good trace point,
+with reading \code{x0} for the new head, \code{x1} for the old head and
+\code{x2} for the filled data size. We can add a probe with the command:
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
+cd /sys/kernel/debug/tracing/
+echo 'p:myprobe 0xffff8000802a100c new_head=%x0:x64 
+       old_head=%x1:x64 size=%x2:x64' > kprobe_events
+\end{lstlisting}
 
 \subsubsection*{Adding probe in user space}
 
