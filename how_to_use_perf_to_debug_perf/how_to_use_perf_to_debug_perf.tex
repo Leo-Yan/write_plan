@@ -92,7 +92,7 @@ debugging methods, the attention is directed towards the perf as debugging
 tool. At last, the article explains how to use perf to debug perf.
 \end{abstract}
 
-\hspace*{3.6mm}\textit{Keywords: Linux, debug, ftrace, kprobe, uprobe, perf } % Keywords
+\hspace*{3.6mm}\textit{Keywords: } Linux, debug, ftrace, kprobe, uprobe, perf
 \vspace{30pt} % Vertical whitespace between the abstract and first section
 
 % ESSAY BODY
@@ -110,7 +110,7 @@ hardware registers and memory can be reviewed.
 
 The purpose of this documentation is to discuss tools which can provide
 tracing capability in runtime. The trace data, including events and variable
-values, are gathered in certain format without pausing the program for
+values, are gathered in a certain context without pausing the program for
 debugging. The content will be divided into four sections:
 \begin{itemize}
 	\item Printing;
@@ -184,7 +184,7 @@ Printing is supported in ftrace.
 
 In the kernel, \code{trace\_printk()} is used to output logs into the ftrace
 ring buffer. Once you use it, you will find this API quite useful: logs saved
-in ftrace buffer will not be bothered by console's long latency, and by
+in ftrace buffer will not be bothered by console's latency, and by
 enlarging buffer size, you will have sufficient capacity to store extensive
 logs. These logs will not flood the console immediately, you can extract logs
 into file whenever you want to parse them.
@@ -227,7 +227,7 @@ part of Google's \href{https://ui.perfetto.dev/}{Perfetto} tool. Perfetto
 is widely used for profiling Android UI performance and depends on the
 ATrace to trace application events - the \code{trace\_marker} is the
 underlying mechanism for tracing. While this article will remain on
-basic tools, it will not dive into ATrace's details.
+basic tools, it will not dive into ATrace.
 
 \subsubsection*{Debugging perf with ftrace}
 
@@ -235,15 +235,15 @@ Now it's a good time point for us to apply ftrace for debugging.
 
 The following experiment is to inspect how the AUX buffer is consumed in perf.
 The AUX buffer is a ring buffer designed to store hardware trace data from
-components such as Arm CoreSight, Intel PT, etc.
+components such as Arm CoreSight, Arm SPE, Intel PT, etc.
 
 After the trace data has been filled by a hardware IP, the kernel calls the
 \code{perf\_aux\_output\_end()} function to update the head of the buffer and
 send a notification to user space.
 
-In the code piece below, the buffer supports two modes: overwrite mode and
-normal mode. The overwrite mode is used for snapshots. For simplicity in
-explanation, we solely focus on the normal mode from line 493 to line 498.
+Two buffer modes are supported: overwrite mode and normal mode. The overwrite
+mode is used for snapshots. For simplicity in explanation, we solely focus on
+the normal mode from line 493 to line 498 in the code piece below.
 Line 496 saves the old head value into the \code{aux\_head} variable; in line
 497, \code{rb->aux\_head} is updated as a new head by adding the \code{size}
 to the old head.
@@ -473,13 +473,12 @@ When the program reaches the breakpoint, it halts, and the debugger takes
 over control. At this point, since the program is stopped, you can take your
 time to read variables, review memory content, and dump CPU general registers.
 
-A subtle aspect of a breakpoint is it can be set as either a hardware
-breakpoint or a software breakpoint. A hardware breakpoint is to set an
-address in the CPU's debug register, while a software breakpoint uses the
-break instruction (the Arm instruction is \code{BRK}) to replace an
-original instruction at the specified address. Both methods ultimately
-interrupt the program execution and transfer control to the debugger for
-further inspection.
+An aspect of a breakpoint is it can be set as either a hardware breakpoint or
+a software breakpoint. A hardware breakpoint is to set an address in the CPU's
+debug register, while a software breakpoint uses the break instruction (the
+Arm instruction is \code{BRK}) to replace an original instruction at the
+specified address. Both methods ultimately interrupt the program execution and
+transfer control to the debugger for further inspection.
 
 We can take dynamic tracing as a self-hosted debugger, often referred to as
 \(probe\) in Linux. When we add a probe, a break instruction is injected into
@@ -590,15 +589,15 @@ function arguments. \code{perf\_aux\_output\_end()} has two arguments: the
 first one is an output handler, and the second one is the filled buffer
 size. When it is called, the registers \code{x0} and \code{x1} hold values for
 these two arguments, respectively. At the address \code{0xffff8000802a0ef0},
-the instruction is \code{"move x2, x1"}, which moves the register \code{x1}'s
-value into \code{x2}. Later in the function, the register \code{x2} holds the
-value for the \code{size} while \code{x1} is assigned to intermediate values.
+the instruction is \code{"move x2, x1"}, which moves the size value in the
+register \code{x1} into \code{x2}. Later in the function, the register
+\code{x2} holds this value while \code{x1} is assigned to intermediate values.
 
 The register \code{x20} contains a pointer value pointing to structure
 \code{perf\_buffer}, it is assigned at \code{0xffff8000802a0f04}. Then, at
-\code{0xffff8000802a0f0c} the field \code{rb->aux\_overwrite} is loaded:
-since the flag has an offset of \code{180} in the structure, the instruction
-\code{"ldr w1, [x20, \#180]"} loads it into the register \code{w1}
+\code{0xffff8000802a0f0c} the \code{rb->aux\_overwrite} is loaded: since this
+field has an offset of \code{180} in the structure \code{perf\_buffer}, the
+instruction \code{"ldr w1, [x20, \#180]"} loads it into the register \code{w1}
 (using \code{w1} as target register means loading value into the \code{x1}
 with upper 4 bytes zeroed).
 
@@ -609,14 +608,14 @@ compares the buffer mode. Now we are only interesed in the normal mode and
 
 From there, it sets the \code{handle->aux\_flags} and retrieves the old buffer
 head into the register \code{x1} at \code{0xffff8000802a1004} - the
-instruction is \code{"ldr x1, [x20, \#144]"}, \code{x20} is the pointer
-for the structure \code{perf\_buffer}, and \code{144} is the offset of the
-buffer's head in the structure. As we know, \code{x2} contains the written
-buffer size, and it is added to the old buffer head (\code{x1}) for a new
-buffer head stored into the register \code{x0}. This is accomplished
+instruction is \code{"ldr x1, [x20, \#144]"}, as mentioned the \code{x20} is
+the pointer for the structure \code{perf\_buffer}, and \code{144} is the
+offset of the buffer's head in the structure. As we know, \code{x2} contains
+the written buffer size, and it is added to the old buffer head (\code{x1})
+for a new buffer head stored into the register \code{x0}. This is accomplished
 at \code{0xffff8000802a1008}.
 
-The sequential address \code{0xffff8000802a100c} would be a good trace point,
+The consecutive address \code{0xffff8000802a100c} would be a good trace point,
 with reading \code{x0} for the new head, \code{x1} for the old head, and
 \code{x2} for the filled data size. We can add a probe with the command:
 
@@ -666,9 +665,12 @@ echo 'p:myprobe perf_aux_output_end+0x12c new_head=%x0:x64 \
 
 \subsubsection*{Adding probe in user space}
 
-We can apply the methodology discussed in the previous section to analyze the
-disassembly of the perf tool. Firstly, generate the disassembly with the
-command:
+Likewise the kprobe, ftrace provides a sysfs node \code{uprobe\_events} for
+inserting a user space probe. And we can apply the methodology discussed in
+the previous section to analyze the disassembly of a program running in user
+space.
+
+Firstly, generate the disassembly for the perf with the command:
 
 \begin{lstlisting}[
   	language=sh,
@@ -677,7 +679,7 @@ command:
 aarch64-linux-gnu-objdump -S -d perf > perf.objdump
 \end{lstlisting}
 
-Thus, we can get the disasembly for \code{\_\_auxtrace\_mmap\_\_read()}.
+In the dump file, we can get the disasembly for \code{\_\_auxtrace\_mmap\_\_read()}.
 
 \begin{lstlisting}[
   	language=sh,
@@ -718,11 +720,12 @@ static int __auxtrace_mmap__read(struct mmap *map,
 }
 \end{lstlisting}
 
-The truncated disassembly piece is for reading the head and the old head, and
-calculating the the filled buffer size. The \code{'else'} branch handles the
-wrap-around case. In the end, both branches run to the address \code{2079e0}
-(see the branch instruction \code{"b 2079e0"} at \code{2079c0}), we can select
-it as the probed address.
+The truncated disassembly piece is for reading the old head and the latest
+head, and calculating the the filled buffer size. The \code{'if'} branch
+handles the normal case and the \code{'else'} branch handles the wrap-around
+case. In the end, both branches run to the address \code{2079e0} (see the
+branch instruction \code{"b 2079e0"} at \code{2079c0}), we can select it as
+the probed address.
 
 From the load and store instructions, we can know variables are stored in the
 stack. If it falls into the \code{"if"} branch, the instruction
@@ -731,16 +734,17 @@ stack. If it falls into the \code{"if"} branch, the instruction
 stack with an offset \code{128}. The filled buffer size is calculated as the
 delta between the head and the old head, and it is stored back into the stack
 with the instcution \code{"str x0, [sp, \#112]"}, the offset is \code{112}.
-
 The \code{"else"} branch does the same for storing the variables into the
-stack. Consequently, we can use the command to inject a user probe:
+stack.
+
+Consequently, we can use the command to inject a user probe:
 
 \begin{lstlisting}[
   	language=sh,
 	breaklines=true
 ]
-cd /sys/kernel/debug/tracing/
-echo 'p /mnt/linux-kernel/linux-cs-dev/tools/perf/perf:0x2079e0 old_off=+128(%sp):x64 head_off=+120(%sp):x64 size=+112(%sp):x64' > uprobe_events
+echo 'p /mnt/linux-kernel/linux-cs-dev/tools/perf/perf:0x2079e0 \
+       old_off=+128(%sp):x64 head_off=+120(%sp):x64 size=+112(%sp):x64' > uprobe_events
 \end{lstlisting}
 
 Now we have known how to add probes for kernel and user space, we just need to
@@ -761,7 +765,8 @@ echo 'p:myprobe perf_aux_output_end+0x12c new_head=%x0:x64 \
 echo 1 > events/kprobes/myprobe1/enable
 
 # Add user space probe
-echo 'p /mnt/linux-kernel/linux-cs-dev/tools/perf/perf:0x2079e0 old_off=+128(%sp):x64 head_off=+120(%sp):x64 size=+112(%sp):x64' > uprobe_events
+echo 'p /mnt/linux-kernel/linux-cs-dev/tools/perf/perf:0x2079e0 \
+       old_off=+128(%sp):x64 head_off=+120(%sp):x64 size=+112(%sp):x64' > uprobe_events
 
 # Enable the user space tracepoint
 echo 1 > events/uprobes/p_perf_0x2079e0/enable
@@ -799,5 +804,8 @@ cat trace
             perf-3479    [002] DNZff 13312.460598: p_perf_0x2079e0: (0xaaaad0f979e0) old_off=0x0 head_off=0x243560 size=0x243560
 \end{lstlisting}
 
+\section*{Using perf for debugging}
+
+Things are not perfect. 
 
 \end{document}
