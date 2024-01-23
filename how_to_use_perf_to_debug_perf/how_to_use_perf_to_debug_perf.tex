@@ -629,7 +629,15 @@ echo 'p:myprobe 0xffff8000802a100c new_head=%x0:x64 old_head=%x1:x64 size=%x2:x6
        > kprobe_events
 \end{lstlisting}
 
-We can use the 'function name + offset' format to replace the arbitrary
+In the command, \code{'p'} means to add a probe, \code{'myprobe'} is the event
+name for the probe. The address \code{0xffff8000802a100c} is where the probe
+is inserted. The followed arguments are for dumping values. The option
+\code{'new\_head=\%x0:x64'} means an argument is named as \code{'new\_head'},
+reading value from the register \code{x0} and printing as the 64-bit
+hexadecimal type \code{'x64'}.
+
+Actually, it's good to improve readability a bit for the kprobe command. We
+can use the 'function name + offset' format to replace the arbitrary
 address for specifying a probe address. This is more readable and avoids
 concerns about address alterations caused by a rebuild:
 
@@ -641,12 +649,12 @@ echo 'p:myprobe perf_aux_output_end+0x12c new_head=%x0:x64 \
        old_head=%x1:x64 size=%x2:x64' > kprobe_events
 \end{lstlisting}
 
-Moreover, the probe supports syntax for fetching memory with the fetch
-register with an offset (the offset can be plus \code{+} or minus \code{-}).
-In above case, the old head is loaded into \code{x1} from the address pointed
-by \code{x20} plus \code{144}. Rather than accessing the register
-\code{x1}, we can use \code{'+144(\%x20)'} for retrieving the old head.
-Therefore, the probe command can be updated as:
+Moreover, the probe supports fetching memory with the fetch register and an
+offset (the syntax is \code{'+/-offset(REG)'}). In the above case, the old
+head is loaded into \code{x1} from the address pointed by \code{x20} plus
+\code{144}. Instead of accessing the register \code{x1} for retrieving the
+old head, we can use \code{'+144(\%x20)'} for the same purpose. Thus, the
+command can be updated as:
 
 \begin{lstlisting}[
   	language=sh,
@@ -658,25 +666,118 @@ echo 'p:myprobe perf_aux_output_end+0x12c new_head=%x0:x64 \
 
 \subsubsection*{Adding probe in user space}
 
+We can apply the methodology discussed in the previous section to analyze the
+disassembly of the perf tool. Firstly, generate the disassembly with the
+command:
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
+aarch64-linux-gnu-objdump -S -d perf > perf.objdump
+\end{lstlisting}
+
+Thus, we can get the disasembly for \code{\_\_auxtrace\_mmap\_\_read()}.
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
+00000000002077f8 <__auxtrace_mmap__read>:
+
+static int __auxtrace_mmap__read(struct mmap *map,
+				 struct auxtrace_record *itr,
+				 struct perf_tool *tool, process_auxtrace_t fn,
+				 bool snapshot, size_t snapshot_size)
+{
+...
+	if (head_off > old_off)
+  2079a0:	f9403fe1 	ldr	x1, [sp, #120]
+  2079a4:	f94043e0 	ldr	x0, [sp, #128]
+  2079a8:	eb00003f 	cmp	x1, x0
+  2079ac:	540000c9 	b.ls	2079c4 <__auxtrace_mmap__read+0x1cc>  // b.plast
+		size = head_off - old_off;
+  2079b0:	f9403fe1 	ldr	x1, [sp, #120]
+  2079b4:	f94043e0 	ldr	x0, [sp, #128]
+  2079b8:	cb000020 	sub	x0, x1, x0
+  2079bc:	f9003be0 	str	x0, [sp, #112]
+  2079c0:	14000008 	b	2079e0 <__auxtrace_mmap__read+0x1e8>
+	else
+		size = mm->len - (old_off - head_off);
+  2079c4:	f9405be0 	ldr	x0, [sp, #176]
+  2079c8:	f9400c01 	ldr	x1, [x0, #24]
+  2079cc:	f9403fe2 	ldr	x2, [sp, #120]
+  2079d0:	f94043e0 	ldr	x0, [sp, #128]
+  2079d4:	cb000040 	sub	x0, x2, x0
+  2079d8:	8b000020 	add	x0, x1, x0
+  2079dc:	f9003be0 	str	x0, [sp, #112]
+
+	if (snapshot && size > snapshot_size)
+  2079e0:	39407fe0 	ldrb	w0, [sp, #31]
+...
+}
+\end{lstlisting}
+
+The truncated disassembly piece is for reading the head and the old head, and
+calculating the the filled buffer size. The \code{'else'} branch handles the
+wrap-around case. In the end, both branches run to the address \code{2079e0}
+(see the branch instruction \code{"b 2079e0"} at \code{2079c0}), we can select
+it as the probed address.
+
+From the load and store instructions, we can know variables are stored in the
+stack. If it falls into the \code{"if"} branch, the instruction
+\code{"ldr x1, [sp, \#120]"} loads the head from the stack with an offset
+\code{120}, and \code{"ldr x0, [sp, \#128]"} fetches the old head from the
+stack with an offset \code{128}. The filled buffer size is calculated as the
+delta between the head and the old head, and it is stored back into the stack
+with the instcution \code{"str x0, [sp, \#112]"}, the offset is \code{112}.
+
+The \code{"else"} branch does the same for storing the variables into the
+stack. Consequently, we can use the command to inject a user probe:
+
 \begin{lstlisting}[
   	language=sh,
 	breaklines=true
 ]
 cd /sys/kernel/debug/tracing/
-echo 'p:myprobe 0xffff8000802a100c new_head=%x0:x64 \
-       old_head=%x1:x64 size=%x2:x64' > kprobe_events
-echo 'p:myprobe perf_aux_output_end+0x12c new_head=%x0:x64 \
-       old_head=%x1:x64 size=%x2:x64' > kprobe_events
+echo 'p /mnt/linux-kernel/linux-cs-dev/tools/perf/perf:0x2079e0 old_off=+128(%sp):x64 head_off=+120(%sp):x64 size=+112(%sp):x64' > uprobe_events
+\end{lstlisting}
+
+Now we have known how to add probes for kernel and user space, we just need to
+re-run the test and capture the trace log.
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
+# Change to tracing folder
+cd /sys/kernel/debug/tracing/
+
+# Add kernel probe
 echo 'p:myprobe perf_aux_output_end+0x12c new_head=%x0:x64 \
        old_head=+144(%x20):x64 size=%x2:x64' > kprobe_events
 
+# Enable the kprobe tracepoint
 echo 1 > events/kprobes/myprobe1/enable
 
+# Add user space probe
 echo 'p /mnt/linux-kernel/linux-cs-dev/tools/perf/perf:0x2079e0 old_off=+128(%sp):x64 head_off=+120(%sp):x64 size=+112(%sp):x64' > uprobe_events
 
+# Enable the user space tracepoint
 echo 1 > events/uprobes/p_perf_0x2079e0/enable
 
+# Start tracing
+echo 1 > tracing_on
+
+# Run test
+perf record -e cs_etm// -- ls
+
+# Stop tracing
+echo 0 > tracing_on
+
+# Dump tracing data
 cat trace
+
 # tracer: nop
 #
 # entries-in-buffer/entries-written: 7/7   #P:6
