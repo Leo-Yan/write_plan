@@ -116,7 +116,7 @@ debugging. The content will be divided into four sections:
 	\item Printing;
 	\item Debugging with ftrace;
 	\item Dynamic tracing;
-	\item Using perf for debugging.
+	\item Using perf to debug perf.
 \end{itemize}
 
 \section*{Printing}
@@ -171,8 +171,7 @@ a promising candidate.
 
 Firstly, ftrace uses a ring buffer to store trace data, allowing users to save
 the trace data into a file for testing and then perform post-analysis. This
-approach enables ftrace to avoid the tracing latency caused by console, unlike
-printing.
+approach enables ftrace to avoid the tracing latency caused by console.
 
 Secondly, ftrace supports both kernel and user space tracing. The entire trace
 data is recorded in a single file and displayed in a time-ordered format, thus
@@ -405,13 +404,14 @@ know the scheduling within this flow, which will be discussed soon.
 
 \subsubsection*{Tracepoints in ftrace}
 
+In the log above, \code{"tracer:\ nop"} indicates that no tracer is enabled.
 The naming 'ftrace' is derived from 'function trace', users can enable
 function tracer or function graph tracer for function-based tracing. Over time,
-ftrace has extended to support latency tracer for profiling scheduling latency.
-In the log above, \code{"tracer:\ nop"} indicates that no tracer is enabled.
+ftrace has extended to support other tracers, for example, the latency tracer
+is for profiling scheduling latency.
 
 Furthermore, ftrace provides tracepoints which are predefined and invoked in
-the kernel. These are commonly known as "static tracepoints". After
+the kernel, which are commonly known as "static tracepoints". After
 the system boots up, you can see the available tracepoints in the subfolder
 \code{events} under the ftrace's debugfs folder.
 
@@ -454,16 +454,15 @@ cat /sys/kernel/debug/tracing/trace
 \end{lstlisting}
 
 The logs show that the profiled program \(ls\) stored hardware tracing data
-into AUX buffer. Then it woke up the perf tool in the \code{sched\_waking}
+into AUX buffer. Then it woke up the perf process in the \code{sched\_waking}
 event. Afterwards, the \(CPU1\) was pulled out from idle, and the scheduler
-placed the perf to run on it. We can know that the \(ls\) program and the
-perf running on two different CPUs, so that avoid performance degradation
+placed the perf process to run on it. We can know that the \(ls\) program and
+the perf running on two different CPUs, so that avoid performance degradation
 due to parallel execution during profiling.
 
-In this section, the printing and static tracepoints in ftrace have shown
-their power. However, they are not efficient, as we must rebuild the source
-code to add tracing. We will explore dynamic tracing to add tracepoints on the
-fly.
+However, the printing and static tracepoints in ftrace are not efficient, as
+we must rebuild the source code to add tracing. We will explore dynamic
+tracing to add tracepoints on the fly.
 
 \section*{Dynamic tracing}
 
@@ -483,11 +482,11 @@ transfer control to the debugger for further inspection.
 We can take dynamic tracing as a self-hosted debugger, often referred to as
 \(probe\) in Linux. When we add a probe, a break instruction is injected into
 a specified address, and an event is attached to it for accessing additional
-data. The original instruction is copied to somewhere for single-step
+data. The original instruction is copied to somewhere for a single-step
 execution.
 
 Ftrace provides \(kprobe\) and \(uprobe\) for adding probe in the kernel and
-user space respectively. We will see demonstrations of how to use them.
+user space respectively. We will demonstrate how to use them.
 
 \subsubsection*{Adding probe in the kernel}
 
@@ -498,22 +497,20 @@ Adding a probe requires specifying two things: the probed address and the
 inspected data. The file \code{Documentation/trace/kprobetrace.rst}
 in the kernel tree explains the kprobe syntax.
 
-An obstacle for using kprobe is figuring out an appropriate address and
-mapping the interested variables to where they are stored. For example, it's
-not difficult to trace a function's entry or return, but it would not be
-straightforward to decide which address should be traced if intending to
-observe in the middle of the function. Arguments or local variables might be
-stored in general registers or in the stack, and it's possible that a
-variable is located in the heap.
+An obstacle to using kprobe is figuring out the appropriate address and
+determining where the interested variables are stored. Tracing a function's
+entry or return is straightforward, but determining the address becomes
+challenging when intending to observe in the middle of the function.
+Arguments or local variables might be stored in general registers or in the
+stack, and it's possible that a variable is located in the heap.
 
-Therefore, to lower the barrier for applying kprobe, we need to understand how
-a Linux kernel image is compiled. We can disassemble a kernel ELF file with the
-\code{objdump} command. If you are working on a cross compilation environment
-for Arm64, use the command \code{aarch64-linux-gnu-objdump} instead. The
-command below uses two options for the disassembly: the option \code{-d} is
-for displaying assembler, and the option \code{-S} is for intermixing the
-source code with disassembly so we can connect C code with assembly
-instructions.
+Therefore, we need to understand how a Linux kernel image is compiled. We can
+disassemble a kernel ELF file with the \code{objdump} command. When working in
+a cross compilation environment for Arm64, you need to use the command
+\code{aarch64-linux-gnu-objdump} instead. The command below uses two options
+for the disassembly: the option \code{'-d'} is for displaying assembler, and
+the option \code{'-S'} is for dumping the source code so we can intermix C
+code with assembly instructions.
 
 \begin{lstlisting}[
   	language=sh,
@@ -526,8 +523,8 @@ In addition to the knowledge of assembly language, understanding the
 general-purpose register usage in the procedure call is crucial for reading
 disassembly. The documentation
 \href{https://github.com/ARM-software/abi-aa/releases/download/2023Q3/aapcs64.pdf}{AAPCS64}
-defines the Procedure Call Standard for AArch64. Applying the mentioned
-knowledges, let’s take a closer look at the disassmebly of the
+defines the Procedure Call Standard for AArch64. Applying the prerequisite
+knowledge, let’s take a closer look at the disassembly of the
 \code{perf\_aux\_output\_end()} function.
 
 \begin{lstlisting}[
@@ -584,7 +581,7 @@ ffff8000802a101c:	d503201f 	nop
 }
 \end{lstlisting}
 
-As defined in AAPCS64, the registers \code{x0} - \code{x7} are used to pass
+AAPCS64 defines that registers \code{x0} - \code{x7} are used to pass
 function arguments. \code{perf\_aux\_output\_end()} has two arguments: the
 first one is an output handler, and the second one is the filled buffer
 size. When it is called, the registers \code{x0} and \code{x1} hold values for
@@ -593,9 +590,9 @@ the instruction is \code{"move x2, x1"}, which moves the size value in the
 register \code{x1} into \code{x2}. Later in the function, the register
 \code{x2} holds this value while \code{x1} is assigned to intermediate values.
 
-The register \code{x20} contains a pointer value pointing to structure
-\code{perf\_buffer}, it is assigned at \code{0xffff8000802a0f04}. Then, at
-\code{0xffff8000802a0f0c} the \code{rb->aux\_overwrite} is loaded: since this
+The register \code{x20} is assigned at \code{0xffff8000802a0f04} for a pointer
+value pointing to structure \code{perf\_buffer}. Then, at the address
+\code{0xffff8000802a0f0c}, the \code{rb->aux\_overwrite} is loaded. Since this
 field has an offset of \code{180} in the structure \code{perf\_buffer}, the
 instruction \code{"ldr w1, [x20, \#180]"} loads it into the register \code{w1}
 (using \code{w1} as target register means loading value into the \code{x1}
@@ -608,16 +605,17 @@ compares the buffer mode. Now we are only interesed in the normal mode and
 
 From there, it sets the \code{handle->aux\_flags} and retrieves the old buffer
 head into the register \code{x1} at \code{0xffff8000802a1004} - the
-instruction is \code{"ldr x1, [x20, \#144]"}, as mentioned the \code{x20} is
-the pointer for the structure \code{perf\_buffer}, and \code{144} is the
-offset of the buffer's head in the structure. As we know, \code{x2} contains
-the written buffer size, and it is added to the old buffer head (\code{x1})
-for a new buffer head stored into the register \code{x0}. This is accomplished
-at \code{0xffff8000802a1008}.
+instruction is \code{"ldr x1, [x20, \#144]"}, \code{144} is the offset of the
+buffer's head in the structure.
+
+As we know, \code{x2} contains the written buffer size. It is added to the
+old buffer head in \code{x1} for a new buffer head and is stored back
+into the register \code{x0}. This operation is accomplished at
+\code{0xffff8000802a1008}.
 
 The consecutive address \code{0xffff8000802a100c} would be a good trace point,
-with reading \code{x0} for the new head, \code{x1} for the old head, and
-\code{x2} for the filled data size. We can add a probe with the command:
+with registers \code{x0}, \code{x1} and \code{x2} containing the values we
+want to dump. To achieve this, we can add a probe with the following command:
 
 \begin{lstlisting}[
   	language=sh,
@@ -628,17 +626,17 @@ echo 'p:myprobe 0xffff8000802a100c new_head=%x0:x64 old_head=%x1:x64 size=%x2:x6
        > kprobe_events
 \end{lstlisting}
 
-In the command, \code{'p'} means to add a probe, \code{'myprobe'} is the event
-name for the probe. The address \code{0xffff8000802a100c} is where the probe
-is inserted. The followed arguments are for dumping values. The option
-\code{'new\_head=\%x0:x64'} means an argument is named as \code{'new\_head'},
+In the command, \code{'p'} means to add a probe, and \code{'myprobe'} is the
+event name for the probe. The address \code{0xffff8000802a100c} is where the
+probe is inserted. The subsequent arguments are for dumping values. The option
+\code{'new\_head=\%x0:x64'} means an argument named as \code{'new\_head'},
 reading value from the register \code{x0} and printing as the 64-bit
-hexadecimal type \code{'x64'}.
+hexadecimal type \code{'x64'}. The later options follow the same format.
 
-Actually, it's good to improve readability a bit for the kprobe command. We
-can use the 'function name + offset' format to replace the arbitrary
-address for specifying a probe address. This is more readable and avoids
-concerns about address alterations caused by a rebuild:
+Improving readability for the kprobe command is plausible. We can use the
+'function name + offset' format to replace an arbitrary address for
+specifying a probe address. This is more readable and will not be bothered by
+address alterations caused by a rebuild:
 
 \begin{lstlisting}[
   	language=sh,
@@ -648,12 +646,12 @@ echo 'p:myprobe perf_aux_output_end+0x12c new_head=%x0:x64 \
        old_head=%x1:x64 size=%x2:x64' > kprobe_events
 \end{lstlisting}
 
-Moreover, the probe supports fetching memory with the fetch register and an
-offset (the syntax is \code{'+/-offset(REG)'}). In the above case, the old
-head is loaded into \code{x1} from the address pointed by \code{x20} plus
-\code{144}. Instead of accessing the register \code{x1} for retrieving the
-old head, we can use \code{'+144(\%x20)'} for the same purpose. Thus, the
-command can be updated as:
+Moreover, the probe supports fetching memory with a fetch register and an
+offset (the syntax is \code{'+/-offset(REG)'}). In this case, the old head is
+kept in two places: it is loaded into \code{x1}, and it's stored in the
+address pointed to by \code{x20} plus \code{144}. Instead of accessing
+register \code{x1} to retrieve the old head, we can use \code{'+144(\%x20)'}
+for the same purpose. Thus, the command can be updated as:
 
 \begin{lstlisting}[
   	language=sh,
@@ -665,10 +663,10 @@ echo 'p:myprobe perf_aux_output_end+0x12c new_head=%x0:x64 \
 
 \subsubsection*{Adding probe in user space}
 
-Likewise the kprobe, ftrace provides a sysfs node \code{uprobe\_events} for
-inserting a user space probe. And we can apply the methodology discussed in
-the previous section to analyze the disassembly of a program running in user
-space.
+Similarly to kprobe, ftrace provides a sysfs node \code{uprobe\_events} for
+inserting a probe into a user space program. We can apply the methodology
+discussed in the previous section to analyze the disassembly of a program
+running in user space.
 
 Firstly, generate the disassembly for the perf with the command:
 
@@ -804,8 +802,13 @@ cat trace
             perf-3479    [002] DNZff 13312.460598: p_perf_0x2079e0: (0xaaaad0f979e0) old_off=0x0 head_off=0x243560 size=0x243560
 \end{lstlisting}
 
-\section*{Using perf for debugging}
+\section*{Using perf to debug perf}
 
-Things are not perfect. 
+Things are not perfect. Kprobe and uprobe inherently require developers to
+acquire intense knowledge before using them.
+
+This is why we move our eyes to the perf tool. The perf tool is capable of
+reading ELF files and annotating with source code. It provides a much more
+user-friendly way to set up a probe.
 
 \end{document}
