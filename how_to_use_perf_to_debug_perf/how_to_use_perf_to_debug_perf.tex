@@ -977,18 +977,14 @@ perf probe --add "perf_aux_output_end:31 old_head=aux_head \
 Added new event:
   probe:perf_aux_output_end_L31 (on perf_aux_output_end:31 with old_head=aux_head new_head=rb->aux_head:x64 size=size:x64)
 
-perf is not linked with libtraceevent, to use the new probe you can use tracefs:
+You can now use it in all perf tools, such as:
 
-	cd /sys/kernel/tracing/
-	echo 1 > events/probe/perf_aux_output_end_L31/enable
-	echo 1 > tracing_on
-	cat trace_pipe
-	Before removing the probe, echo 0 > events/probe/perf_aux_output_end_L31/enable
+	perf record -e probe:perf_aux_output_end_L31 -aR sleep 1
 \end{lstlisting}
 
 \subsubsection*{Adding a probe in the perf}
 
-The rest thing is to apply the same steps for adding probe in the perf tool.
+The rest thing is to apply the same steps for adding a probe in the perf tool.
 
 Firstly, we display the source code lines for the \code{\_\_auxtrace\_mmap\_\_read()} function:
 
@@ -1097,18 +1093,19 @@ Available variables at __auxtrace_mmap__read:38
                 u64     ref
                 union perf_event        ev
                 unsigned char*  data
+\end{lstlisting}
 
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
 perf probe -x /mnt/linux-kernel/tools/perf/perf --add "__auxtrace_mmap__read+488 head_off=head_off old_off=old_off size=size"
 Added new event:
   probe_perf:__auxtrace_mmap__read (on __auxtrace_mmap__read+488 in /mnt/linux-kernel/tools/perf/perf with head_off=head_off old_off=old_off size=size)
 
-perf is not linked with libtraceevent, to use the new probe you can use tracefs:
+You can now use it in all perf tools, such as:
 
-	cd /sys/kernel/tracing/
-	echo 1 > events/probe_perf/__auxtrace_mmap__read/enable
-	echo 1 > tracing_on
-	cat trace_pipe
-	Before removing the probe, echo 0 > events/probe_perf/__auxtrace_mmap__read/enable
+	perf record -e probe_perf:__auxtrace_mmap__read -aR sleep 1
 \end{lstlisting}
 
 \begin{lstlisting}[
@@ -1144,5 +1141,97 @@ When you try to
 show variables for an inline function, it's even possible to output multiple
 probe points. This is because an inline function can be linked into different
 functions, so the linked functions plus offset will be displayed.
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
+perf record -o perf.data.dbg -e probe:perf_aux_output_end_L31 -e probe_perf:__auxtrace_mmap__read -- perf record -o perf.data.etm -e cs_etm// -- ls
+
+perf script -i perf.data.dbg
+              ls   10102 [000] 54342.677011:    probe:perf_aux_output_end_L31: (ffff8000802a0f2c) old_head=0x0 new_head=0xead30 size=0xead30
+              ls   10102 [001] 54342.677796:    probe:perf_aux_output_end_L31: (ffff8000802a0f2c) old_head=0x0 new_head=0xbb90 size=0xbb90
+              ls   10102 [001] 54342.680020:    probe:perf_aux_output_end_L31: (ffff8000802a0f2c) old_head=0xbb90 new_head=0x1bda0 size=0x10210
+              ls   10102 [003] 54342.686812:    probe:perf_aux_output_end_L31: (ffff8000802a0f2c) old_head=0x0 new_head=0x1c990 size=0x1c990
+              ls   10102 [003] 54342.695337:    probe:perf_aux_output_end_L31: (ffff8000802a0f2c) old_head=0x1c990 new_head=0x9cb40 size=0x801b0
+              ls   10102 [003] 54342.698274:    probe:perf_aux_output_end_L31: (ffff8000802a0f2c) old_head=0x9cb40 new_head=0x1095f0 size=0x6cab0
+            perf   10100 [001] 54342.698429: probe_perf:__auxtrace_mmap__read: (aaaad68236fc) head_off=0xead30 old_off=0x0 size=0xead30
+            perf   10100 [001] 54342.701141: probe_perf:__auxtrace_mmap__read: (aaaad68236fc) head_off=0x1bda0 old_off=0x0 size=0x1bda0
+            perf   10100 [001] 54342.701500: probe_perf:__auxtrace_mmap__read: (aaaad68236fc) head_off=0x1095f0 old_off=0x0 size=0x1095f0
+\end{lstlisting}
+
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
+perf record -o perf.data.dbg -e probe:perf_aux_output_end_L31/call-graph=fp/ -e probe_perf:__auxtrace_mmap__read/call-graph=fp/ -- perf record -o perf.data.etm -e cs_etm// -- ls
+\end{lstlisting}
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
+perf script -i perf.data.dbg
+
+ls   10028 [003] 53664.368328:    probe:perf_aux_output_end_L31: (ffff8000802a0f2c) old_head=0x0 new_head=0xed100 size=0xed100
+        ffff8000802a0f2c perf_aux_output_end+0x4c (vmlinux)
+        ffff800081052240 etm_event_stop+0x140 (vmlinux)
+        ffff8000810522d4 etm_event_del+0x1c (vmlinux)
+        ffff800080294384 event_sched_out+0x9c (vmlinux)
+        ffff800080294574 group_sched_out+0x5c (vmlinux)
+        ffff800080294930 __pmu_ctx_sched_out+0xe8 (vmlinux)
+        ffff800080294a48 ctx_sched_out+0xc8 (vmlinux)
+        ffff800080294b50 task_ctx_sched_out+0x38 (vmlinux)
+        ffff800080296a98 __perf_event_task_sched_out+0x1a0 (vmlinux)
+        ffff8000812f40a0 __schedule+0x400 (vmlinux)
+        ffff8000812f4814 schedule+0x3c (vmlinux)
+        ffff80008126f330 rpc_wait_bit_killable+0x20 (vmlinux)
+        ffff8000812f5038 __wait_on_bit+0x58 (vmlinux)
+        ffff8000812f51ec out_of_line_wait_on_bit+0x8c (vmlinux)
+        ffff800081279020 __rpc_execute+0x120 (vmlinux)
+        ffff8000812797d4 rpc_execute+0x164 (vmlinux)
+        ffff80008125971c rpc_run_task+0x12c (vmlinux)
+        ffff800080537fb4 nfs4_do_call_sync+0x7c (vmlinux)
+        ffff8000805380f8 _nfs4_proc_getattr+0xf0 (vmlinux)
+        ffff80008054116c nfs4_proc_getattr+0x7c (vmlinux)
+        ffff80008050e944 __nfs_revalidate_inode+0xe4 (vmlinux)
+        ffff800080502cdc nfs_lookup_verify_inode+0x94 (vmlinux)
+        ffff800080502d64 nfs_weak_revalidate+0x5c (vmlinux)
+        ffff8000803a3b94 complete_walk+0x9c (vmlinux)
+        ffff8000803a8794 path_openat+0x82c (vmlinux)
+        ffff8000803a9834 do_filp_open+0xa4 (vmlinux)
+        ffff80008038f948 do_sys_openat2+0xc8 (vmlinux)
+        ffff80008038fccc __arm64_sys_openat+0x6c (vmlinux)
+        ffff800080029a30 invoke_syscall+0x50 (vmlinux)
+        ffff800080029bd0 el0_svc_common.constprop.0+0xc8 (vmlinux)
+        ffff800080029c1c do_el0_svc+0x24 (vmlinux)
+        ffff8000812ec134 el0_svc+0x34 (vmlinux)
+        ffff8000812ec568 el0t_64_sync_handler+0x100 (vmlinux)
+        ffff800080011d50 el0t_64_sync+0x190 (vmlinux)
+            ffff880b5c70 __open64_nocancel+0x48 (/usr/lib/aarch64-linux-gnu/libc-2.28.so)
+            ffff8808c824 __opendir+0x1c (/usr/lib/aarch64-linux-gnu/libc-2.28.so)
+            aaaacaa8a4d8 [unknown] (/usr/bin/ls)
+            aaaacaa843f0 [unknown] (/usr/bin/ls)
+            ffff8800fd24 __libc_start_main+0xe4 (/usr/lib/aarch64-linux-gnu/libc-2.28.so)
+            aaaacaa8584c [unknown] (/usr/bin/ls)
+
+perf   10026 [001] 53664.385318: probe_perf:__auxtrace_mmap__read: (aaaae2d036fc) head_off=0x21fef0 old_off=0x0 size=0x21fef0
+            aaaae2d036fc __auxtrace_mmap__read+0x1e8 (/mnt/linux-kernel/tools/perf/perf)
+            aaaae2d03a44 auxtrace_mmap__read+0x48 (/mnt/linux-kernel/tools/perf/perf)
+            aaaae2b141bc record__auxtrace_mmap_read+0x40 (/mnt/linux-kernel/tools/perf/perf)
+            aaaae2b16e98 record__mmap_read_evlist+0x274 (/mnt/linux-kernel/tools/perf/perf)
+            aaaae2b16fb4 record__mmap_read_all+0x40 (/mnt/linux-kernel/tools/perf/perf)
+            aaaae2b19ff4 __cmd_record+0x9ac (/mnt/linux-kernel/tools/perf/perf)
+            aaaae2b1dc0c cmd_record+0xb78 (/mnt/linux-kernel/tools/perf/perf)
+            aaaae2c04f90 run_builtin+0x110 (/mnt/linux-kernel/tools/perf/perf)
+            aaaae2c0523c handle_internal_command+0xf4 (/mnt/linux-kernel/tools/perf/perf)
+            aaaae2c053f4 run_argv+0x40 (/mnt/linux-kernel/tools/perf/perf)
+            aaaae2c0570c main+0x248 (/mnt/linux-kernel/tools/perf/perf)
+            ffff9d4aed24 __libc_start_main+0xe4 (/usr/lib/aarch64-linux-gnu/libc-2.28.so)
+            aaaae2afd7c4 _start+0x34 (/mnt/linux-kernel/tools/perf/perf)
+
+
+\end{lstlisting}
 
 \end{document}
