@@ -741,7 +741,7 @@ Consequently, we can use the command to inject a user probe:
   	language=sh,
 	breaklines=true
 ]
-echo 'p /mnt/linux-kernel/linux-cs-dev/tools/perf/perf:0x2079e0 \
+echo 'p /mnt/linux-kernel/tools/perf/perf:0x2079e0 \
        old_off=+128(%sp):x64 head_off=+120(%sp):x64 size=+112(%sp):x64' > uprobe_events
 \end{lstlisting}
 
@@ -763,7 +763,7 @@ echo 'p:myprobe perf_aux_output_end+0x12c new_head=%x0:x64 \
 echo 1 > events/kprobes/myprobe1/enable
 
 # Add user space probe
-echo 'p /mnt/linux-kernel/linux-cs-dev/tools/perf/perf:0x2079e0 \
+echo 'p /mnt/linux-kernel/tools/perf/perf:0x2079e0 \
        old_off=+128(%sp):x64 head_off=+120(%sp):x64 size=+112(%sp):x64' > uprobe_events
 
 # Enable the user space tracepoint
@@ -807,8 +807,342 @@ cat trace
 Things are not perfect. Kprobe and uprobe inherently require developers to
 acquire intense knowledge before using them.
 
-This is why we move our eyes to the perf tool. The perf tool is capable of
-reading ELF files and annotating with source code. It provides a much more
+This is why we move eyes to the perf tool. The perf tool is capable of reading
+ELF files and annotating with source code. It provides a much more
 user-friendly way to set up a probe.
+
+The command \code{'perf probe'} is for both kprobe and uprobe. The two
+options \code{'---line'} and \code{'---vars'} in the command are quite handy.
+The former is for locating code lines, and the latter one gives out variables
+avaliable for tracing. After finalizing the traced address and variables, the
+option \code{'---add'} is used to add a probe. If the tracepoint is no longer
+needed, we can use the option \code{'---del'} to remove it.
+
+Let's replicate the experiment we have done.
+
+\subsubsection*{Building binaries with debugging info}
+
+As said, the perf tool can understand the debugging info in an ELF file.
+Building is required to enable debugging options so that the perf tool has
+sufficient information to connect the binary with source code.
+
+The example below sets up the Linux kernel debug configurations. When
+\code{CONFIG\_DEBUG\_INFO} is enabled, the compiler option \code{'-g'} is
+turned on. The configurations \code{CONFIG\_DEBUG\_INFO\_DWARF5} and
+\code{CONFIG\_DEBUG\_INFO\_BTF} are selected to enable the DWARF5 debug data
+format and BPF type format. At last, \code{CONFIG\_DEBUG\_INFO\_REDUCED} is
+disabled to avoid stripping debugging information from the \code{vmlinux}.
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
+cd /path/to/kernel/
+./scripts/config -e CONFIG_DEBUG_INFO
+./scripts/config -e CONFIG_DEBUG_INFO_DWARF5
+./scripts/config -e CONFIG_DEBUG_INFO_BTF
+./scripts/config -d CONFIG_DEBUG_INFO_REDUCED
+\end{lstlisting}
+
+It's also necessary to enable compiler's debug option and mute the optimization
+option when building the perf. This can be achieved by simply appending the
+option \code{'DEBUG=1'} in the make command. The option \code{'CORESIGHT=1'} is
+for support Arm CoreSight decoder in the tool.
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
+cd /path/to/kernel/tools/perf
+make DEBUG=1 CORESIGHT=1
+\end{lstlisting}
+
+\subsubsection*{Adding a probe in the kernel}
+
+The \code{'perf probe'} command with option \code{'---line'} dumps which code
+lines in \code{perf\_aux\_output\_end()} are suitable for injecting a dynamic
+tracepoint:
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
+perf probe --line "perf_aux_output_end" -k /path/to/vmlinux -s /path/to/kernel/
+\end{lstlisting}
+
+Perf needs the vmlinux image. If the vmlinux path is not specified by the option
+\code{'-k'} or \code{'---vmlinux'}, it is assumed to be placed in the same
+folder as the current working directory or in any of the predefined paths in
+the structure
+\href{https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/tools/perf/util/symbol.c?h=v6.8-rc1#n2246}{\code{vmlinux\_paths\_upd}}.
+The option \code{'-s'} followed by a path is used to specify the Linux kernel
+source, which should be consistent with the built kernel image.
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
+perf probe --line "perf_aux_output_end" -s /mnt/linux-kernel
+<perf_aux_output_end@.///kernel/events/ring_buffer.c:0>
+      0  void perf_aux_output_end(struct perf_output_handle *handle, unsigned long size)
+         {
+                bool wakeup = !!(handle->aux_flags & PERF_AUX_FLAG_TRUNCATED);
+      3         struct perf_buffer *rb = handle->rb;
+                unsigned long aux_head;
+
+                /* in overwrite mode, driver provides aux_head via handle */
+                if (rb->aux_overwrite) {
+      8                 handle->aux_flags |= PERF_AUX_FLAG_OVERWRITE;
+
+     10                 aux_head = handle->head;
+                        rb->aux_head = aux_head;
+                } else {
+     13                 handle->aux_flags &= ~PERF_AUX_FLAG_OVERWRITE;
+
+     15                 aux_head = rb->aux_head;
+     16                 rb->aux_head += size;
+                }
+
+                /*
+                 * Only send RECORD_AUX if we have something useful to communicate
+                 *
+                 * Note: the OVERWRITE records by themselves are not considered
+                 * useful, as they don't communicate any *new* information,
+                 * aside from the short-lived offset, that becomes history at
+                 * the next event sched-in and therefore isn't useful.
+                 * The userspace that needs to copy out AUX data in overwrite
+                 * mode should know to use user_page::aux_head for the actual
+                 * offset. So, from now on we don't output AUX records that
+                 * have *only* OVERWRITE flag set.
+                 */
+     31         if (size || (handle->aux_flags & ~(u64)PERF_AUX_FLAG_OVERWRITE))
+     32                 perf_event_aux_event(handle->event, aux_head, size,
+                                             handle->aux_flags);
+
+     35         WRITE_ONCE(rb->user_page->aux_head, rb->aux_head);
+                if (rb_need_aux_wakeup(rb))
+                        wakeup = true;
+
+     39         if (wakeup) {
+     40                 if (handle->aux_flags & PERF_AUX_FLAG_TRUNCATED)
+     41                         handle->event->pending_disable = smp_processor_id();
+     42                 perf_output_wakeup(handle);
+                }
+
+     45         handle->event = NULL;
+
+     47         WRITE_ONCE(rb->aux_nest, 0);
+                /* can't be last */
+                rb_free_aux(rb);
+     50         ring_buffer_put(rb);
+         }
+\end{lstlisting}
+
+In the annotation, the lines with prefixed numbers are candidates for probes.
+The new buffer head is calculated from the line 8 to line 16. After that, the
+line 31 is a good place to observe the result.
+
+Next, we intend to check which variables are available in the line 31 of the
+function. So the option \code{'---vars'} can be used at this point:
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
+perf probe --vars "perf_aux_output_end:31" -s /mnt/linux-kernel/
+Available variables at perf_aux_output_end:31
+        @<perf_aux_output_end+68>
+                bool    wakeup
+                long unsigned int       aux_head
+                long unsigned int       size
+                struct perf_buffer*     rb
+                struct perf_output_handle*      handle
+\end{lstlisting}
+
+In the log, \code{'@<perf\_aux\_output\_end+68>'} indicates that the probe
+point has the offset of 68 from the start of the function. Then, there are
+five local variables availiable for tracing. If we recall the previous
+analysis, we know that \code{aux\_head} holds the old head,
+\code{rb->aux\_head} is for the new head, and the variable \code{size} is
+for the filled size.
+
+Now use the option \code{'---add'} to add a probe in the kernel:
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
+perf probe --add "perf_aux_output_end:31 old_head=aux_head \
+                    new_head=rb->aux_head:x64 size=size:x64" -s /mnt/linux-kernel/
+Added new event:
+  probe:perf_aux_output_end_L31 (on perf_aux_output_end:31 with old_head=aux_head new_head=rb->aux_head:x64 size=size:x64)
+
+perf is not linked with libtraceevent, to use the new probe you can use tracefs:
+
+	cd /sys/kernel/tracing/
+	echo 1 > events/probe/perf_aux_output_end_L31/enable
+	echo 1 > tracing_on
+	cat trace_pipe
+	Before removing the probe, echo 0 > events/probe/perf_aux_output_end_L31/enable
+\end{lstlisting}
+
+\subsubsection*{Adding a probe in the perf}
+
+The rest thing is to apply the same steps for adding probe in the perf tool.
+
+Firstly, we display the source code lines for the \code{\_\_auxtrace\_mmap\_\_read()} function:
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
+perf probe -x /mnt/linux-kernel/tools/perf/perf --line "__auxtrace_mmap__read"
+<__auxtrace_mmap__read@/mnt/linux-kernel/tools/perf/util/auxtrace.c:0>
+      0  static int __auxtrace_mmap__read(struct mmap *map,
+<__auxtrace_mmap__read@/mnt/linux-kernel/tools/perf/util/auxtrace.c:0>
+      0  static int __auxtrace_mmap__read(struct mmap *map,
+                                         struct auxtrace_record *itr,
+                                         struct perf_tool *tool, process_auxtrace_t fn,
+                                         bool snapshot, size_t snapshot_size)
+      4  {
+      5         struct auxtrace_mmap *mm = &map->auxtrace_mmap;
+      6         u64 head, old = mm->prev, offset, ref;
+      7         unsigned char *data = mm->base;
+                size_t size, head_off, old_off, len1, len2, padding;
+                union perf_event ev;
+                void *data1, *data2;
+     11         int kernel_is_64_bit = perf_env__kernel_is_64_bit(evsel__env(NULL));
+
+     13         head = auxtrace_mmap__read_head(mm, kernel_is_64_bit);
+
+     15         if (snapshot &&
+     16             auxtrace_record__find_snapshot(itr, mm->idx, mm, data, &head, &old))
+     17                 return -1;
+
+     19         if (old == head)
+     20                 return 0;
+
+     22         pr_debug3("auxtrace idx %d old %#"PRIx64" head %#"PRIx64" diff %#"PRIx64"\n",
+                          mm->idx, old, head, head - old);
+
+     25         if (mm->mask) {
+     26                 head_off = head & mm->mask;
+     27                 old_off = old & mm->mask;
+                } else {
+     29                 head_off = head % mm->len;
+     30                 old_off = old % mm->len;
+                }
+
+     33         if (head_off > old_off)
+     34                 size = head_off - old_off;
+                else
+     36                 size = mm->len - (old_off - head_off);
+
+     38         if (snapshot && size > snapshot_size)
+     39                 size = snapshot_size;
+		...
+         }
+\end{lstlisting}
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
+
+perf probe -x /mnt/linux-kernel/tools/perf/perf --vars "__auxtrace_mmap__read:38"
+Available variables at __auxtrace_mmap__read:38
+        @<__auxtrace_mmap__read+488>
+                (unknown_type)  data1
+                (unknown_type)  data2
+                _Bool   snapshot
+                int     kernel_is_64_bit
+                process_auxtrace_t      fn
+                size_t  head_off
+                size_t  len1
+                size_t  len2
+                size_t  old_off
+                size_t  padding
+                size_t  size
+                size_t  snapshot_size
+                struct auxtrace_mmap*   mm
+                struct auxtrace_record* itr
+                struct mmap*    map
+                struct perf_tool*       tool
+                u64     head
+                u64     offset
+                u64     old
+                u64     ref
+                union perf_event        ev
+                unsigned char*  data
+        @<__auxtrace_mmap__read+500>
+                (unknown_type)  data1
+                (unknown_type)  data2
+                _Bool   snapshot
+                int     kernel_is_64_bit
+                process_auxtrace_t      fn
+                size_t  head_off
+                size_t  len1
+                size_t  len2
+                size_t  old_off
+                size_t  padding
+                size_t  size
+                size_t  snapshot_size
+                struct auxtrace_mmap*   mm
+                struct auxtrace_record* itr
+                struct mmap*    map
+                struct perf_tool*       tool
+                u64     head
+                u64     offset
+                u64     old
+                u64     ref
+                union perf_event        ev
+                unsigned char*  data
+
+perf probe -x /mnt/linux-kernel/tools/perf/perf --add "__auxtrace_mmap__read+488 head_off=head_off old_off=old_off size=size"
+Added new event:
+  probe_perf:__auxtrace_mmap__read (on __auxtrace_mmap__read+488 in /mnt/linux-kernel/tools/perf/perf with head_off=head_off old_off=old_off size=size)
+
+perf is not linked with libtraceevent, to use the new probe you can use tracefs:
+
+	cd /sys/kernel/tracing/
+	echo 1 > events/probe_perf/__auxtrace_mmap__read/enable
+	echo 1 > tracing_on
+	cat trace_pipe
+	Before removing the probe, echo 0 > events/probe_perf/__auxtrace_mmap__read/enable
+\end{lstlisting}
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
+echo 1 > events/probe/perf_aux_output_end_L31/enable
+
+echo 1 > events/probe_perf/__auxtrace_mmap__read/enable
+
+cat trace
+# tracer: nop
+#
+# entries-in-buffer/entries-written: 6/6   #P:6
+#
+#                                _-----=> irqs-off/BH-disabled
+#                               / _----=> need-resched
+#                              | / _---=> hardirq/softirq
+#                              || / _--=> preempt-depth
+#                              ||| / _-=> migrate-disable
+#                              |||| /     delay
+#           TASK-PID     CPU#  |||||  TIMESTAMP  FUNCTION
+#              | |         |   |||||     |         |
+              ls-4889    [005] d..3. 50585.840092: perf_aux_output_end_L31: (perf_aux_output_end+0x4c/0x138) old_head=0x0 new_head=0xe4cd0 size=0xe4cd0
+              ls-4889    [005] d..3. 50585.841170: perf_aux_output_end_L31: (perf_aux_output_end+0x4c/0x138) old_head=0xe4cd0 new_head=0xf0750 size=0xba80
+              ls-4889    [005] d..3. 50585.843651: perf_aux_output_end_L31: (perf_aux_output_end+0x4c/0x138) old_head=0xf0750 new_head=0x100eb0 size=0x10760
+              ls-4889    [005] d..3. 50585.847108: perf_aux_output_end_L31: (perf_aux_output_end+0x4c/0x138) old_head=0x100eb0 new_head=0x11c870 size=0x1b9c0
+              ls-4889    [005] d..1. 50585.857568: perf_aux_output_end_L31: (perf_aux_output_end+0x4c/0x138) old_head=0x11c870 new_head=0x219810 size=0xfcfa0
+            perf-4888    [002] DNZff 50585.857721: __auxtrace_mmap__read: (0xaaaab03279e0) head_off=0x219810 old_off=0x0 size=0x219810
+\end{lstlisting}
+
+When you try to
+show variables for an inline function, it's even possible to output multiple
+probe points. This is because an inline function can be linked into different
+functions, so the linked functions plus offset will be displayed.
 
 \end{document}
