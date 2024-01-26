@@ -859,30 +859,32 @@ make DEBUG=1 CORESIGHT=1
 
 \subsubsection*{Adding a probe in the kernel}
 
-The \code{'perf probe'} command with option \code{'---line'} dumps which code
-lines in \code{perf\_aux\_output\_end()} are suitable for injecting a dynamic
-tracepoint:
+To learn which source code lines in \code{perf\_aux\_output\_end()} are
+suitable for injecting a tracepoint, we can use the \code{'perf probe'}
+command with option \code{'---line'}.
 
-\begin{lstlisting}[
-  	language=sh,
-	breaklines=true
-]
-perf probe --line "perf_aux_output_end" -k /path/to/vmlinux -s /path/to/kernel/
-\end{lstlisting}
-
-Perf needs the vmlinux image. If the vmlinux path is not specified by the option
+Perf needs the vmlinux file. If the vmlinux path is not offered by the option
 \code{'-k'} or \code{'---vmlinux'}, it is assumed to be placed in the same
 folder as the current working directory or in any of the predefined paths in
 the structure
 \href{https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/tools/perf/util/symbol.c?h=v6.8-rc1#n2246}{\code{vmlinux\_paths\_upd}}.
 The option \code{'-s'} followed by a path is used to specify the Linux kernel
-source, which should be consistent with the built kernel image.
+source, which should be consistent with the built kernel image, in below case,
+the kernel source folder is \code{'/mnt/linux-kernel/'}.
 
 \begin{lstlisting}[
   	language=sh,
 	breaklines=true
 ]
-perf probe --line "perf_aux_output_end" -s /mnt/linux-kernel
+perf probe --line "perf_aux_output_end" -k ./vmlinux -s /mnt/linux-kernel/
+\end{lstlisting}
+
+As result, we can get output:
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
 <perf_aux_output_end@.///kernel/events/ring_buffer.c:0>
       0  void perf_aux_output_end(struct perf_output_handle *handle, unsigned long size)
          {
@@ -938,18 +940,32 @@ perf probe --line "perf_aux_output_end" -s /mnt/linux-kernel
          }
 \end{lstlisting}
 
-In the annotation, the lines with prefixed numbers are candidates for probes.
-The new buffer head is calculated from the line 8 to line 16. After that, the
-line 31 is a good place to observe the result.
+The tool annotates lines with prefixed numbers that are candidates for probes.
+The buffer head is calculated from line 8 to line 16. After that, line 31 is a
+good place to observe the calculation result.
 
-Next, we intend to check which variables are available in the line 31 of the
-function. So the option \code{'---vars'} can be used at this point:
+Next, we intend to check which variables are available at the line 31 of the
+function. So the option \code{'---vars'} can be used with specifying the
+source code line with format \code{'function\_name:line\_number'}:
 
 \begin{lstlisting}[
   	language=sh,
 	breaklines=true
 ]
 perf probe --vars "perf_aux_output_end:31" -s /mnt/linux-kernel/
+\end{lstlisting}
+
+The output \code{'@<perf\_aux\_output\_end+68>'} indicates that source code
+line mapped to the offset of 68 from the start of the function. Then, there
+are five local variables availiable for tracing. If we recall the previous
+analysis, we know that \code{aux\_head} holds the old head,
+\code{rb->aux\_head} is for the new head, and the variable \code{size}
+presents the filled size.
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
 Available variables at perf_aux_output_end:31
         @<perf_aux_output_end+68>
                 bool    wakeup
@@ -959,14 +975,7 @@ Available variables at perf_aux_output_end:31
                 struct perf_output_handle*      handle
 \end{lstlisting}
 
-In the log, \code{'@<perf\_aux\_output\_end+68>'} indicates that the probe
-point has the offset of 68 from the start of the function. Then, there are
-five local variables availiable for tracing. If we recall the previous
-analysis, we know that \code{aux\_head} holds the old head,
-\code{rb->aux\_head} is for the new head, and the variable \code{size} is
-for the filled size.
-
-Now use the option \code{'---add'} to add a probe in the kernel:
+Now, use the option \code{'---add'} to add a probe in the kernel.
 
 \begin{lstlisting}[
   	language=sh,
@@ -982,17 +991,33 @@ You can now use it in all perf tools, such as:
 	perf record -e probe:perf_aux_output_end_L31 -aR sleep 1
 \end{lstlisting}
 
+The advantage of using perf is that it converts the readable expression to the
+probe syntax with raw addresses and registers, which can significantly
+reduce the difficulty of setting up probes.
+
 \subsubsection*{Adding a probe in the perf}
 
-The rest thing is to apply the same steps for adding a probe in the perf tool.
+The rest is to apply the same steps for adding a probe in the perf tool.
 
-Firstly, we display the source code lines for the \code{\_\_auxtrace\_mmap\_\_read()} function:
+Firstly, we display the source code lines for the
+\code{\_\_auxtrace\_mmap\_\_read()} function. Additionally, we need to specify
+path to the executable with the option \code{'-x'} or \code{'---exec'} for the
+user space program.
 
 \begin{lstlisting}[
   	language=sh,
 	breaklines=true
 ]
 perf probe -x /mnt/linux-kernel/tools/perf/perf --line "__auxtrace_mmap__read"
+\end{lstlisting}
+
+The dumping below shows that the size and heads calculation extends until line
+36, and line 38 would be a suitable location for injecting a probe.
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
 <__auxtrace_mmap__read@/mnt/linux-kernel/tools/perf/util/auxtrace.c:0>
       0  static int __auxtrace_mmap__read(struct mmap *map,
 <__auxtrace_mmap__read@/mnt/linux-kernel/tools/perf/util/auxtrace.c:0>
@@ -1040,12 +1065,31 @@ perf probe -x /mnt/linux-kernel/tools/perf/perf --line "__auxtrace_mmap__read"
          }
 \end{lstlisting}
 
+We also need to confirm which variables are accessible at the line 38 of the
+function with option \code{'---vars'}.
+
 \begin{lstlisting}[
   	language=sh,
 	breaklines=true
 ]
-
 perf probe -x /mnt/linux-kernel/tools/perf/perf --vars "__auxtrace_mmap__read:38"
+\end{lstlisting}
+
+It's a bit suprising that the tool dumps out two different offsets (one is
+\code{+488} and another is \code{+500}) for line 38, with the associated
+variables for each offset. Due to line 38 having multiple conditions compiled
+with multiple branch instructions, if we add probes for this line, perf will
+inject tracepoints for all relevant offsets.
+
+As a side topic, when you attempt to show variables for a probe point in an
+inline function, it's also possible to output multiple probe points. This is
+because an inline function can be compiled into different functions, the
+functions plus offset will be displayed in this case.
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
 Available variables at __auxtrace_mmap__read:38
         @<__auxtrace_mmap__read+488>
                 (unknown_type)  data1
@@ -1095,6 +1139,11 @@ Available variables at __auxtrace_mmap__read:38
                 unsigned char*  data
 \end{lstlisting}
 
+Instead of using \code{'function\_name:line\_number'}, we can use the format
+\code{'function\_name+offset'} to specify a more accurate probe point. Here,
+we select the offset \code{488} for tracing and dump the local variables
+\code{head\_off}, \code{old\_off} and \code{size}. The command is as: 
+
 \begin{lstlisting}[
   	language=sh,
 	breaklines=true
@@ -1108,14 +1157,35 @@ You can now use it in all perf tools, such as:
 	perf record -e probe_perf:__auxtrace_mmap__read -aR sleep 1
 \end{lstlisting}
 
+\subsubsection*{Tracing with the perf}
+
+After using the perf tool to setup probes, now we need to check how to consume
+these tracepoints. Let's begin by reproducing the steps via the tracing file
+system.
+
 \begin{lstlisting}[
   	language=sh,
 	breaklines=true
 ]
+# Change to tracing folder
+cd /sys/kernel/debug/tracing/
+
+# Enable the kprobe tracepoint
 echo 1 > events/probe/perf_aux_output_end_L31/enable
 
+# Enable the user space tracepoint
 echo 1 > events/probe_perf/__auxtrace_mmap__read/enable
 
+# Start tracing
+echo 1 > tracing_on
+
+# Run test
+perf record -e cs_etm// -- ls
+
+# Stop tracing
+echo 0 > tracing_on
+
+# Dump tracing data
 cat trace
 # tracer: nop
 #
@@ -1137,17 +1207,49 @@ cat trace
             perf-4888    [002] DNZff 50585.857721: __auxtrace_mmap__read: (0xaaaab03279e0) head_off=0x219810 old_off=0x0 size=0x219810
 \end{lstlisting}
 
-When you try to
-show variables for an inline function, it's even possible to output multiple
-probe points. This is because an inline function can be linked into different
-functions, so the linked functions plus offset will be displayed.
+Actually, after we enable the perf, it's no need to use ftrace knobs for the
+tracing. The perf tool can handle everything, including recording and
+reporting the trace data.
+
+Using perf to debug perf involves two perf programs running. The first program
+is to open \code{cs\_etm} PMU event and record Arm CoreSight hardware
+trace data for program \code{ls}. The command is
+\code{'perf record -o perf.data.etm -e cs\_etm// --- ls'}. Note that
+\code{'---'} is a separator followed by a traced program and its arguments (if
+there are any).
+
+The second perf program opens the named probes and takes the first perf
+program as its target program. And use another separator \code{'---'}
+to divide the two perf programs.
+
+By default, perf uses the name \code{'perf.data'} for a recording if a data file name
+is not given. But, if two perf recordings save their trace data into the same
+file, it can cause mess. Therefore, we specify distinct output file names
+using the '-o' option for each perf program. One is \code{'perf.data.etm'} for
+the session related to the \code{cs\_etm} PMU event, and the another is
+\code{'perf.data.dbg'} for the debugging program.
+
+With the above explanation, writing the following command to use perf for
+debugging perf should not be difficult:
 
 \begin{lstlisting}[
   	language=sh,
 	breaklines=true
 ]
-perf record -o perf.data.dbg -e probe:perf_aux_output_end_L31 -e probe_perf:__auxtrace_mmap__read -- perf record -o perf.data.etm -e cs_etm// -- ls
+perf record -o perf.data.dbg -e probe:perf_aux_output_end_L31 \
+             -e probe_perf:__auxtrace_mmap__read -- \
+             perf record -o perf.data.etm -e cs_etm// -- ls
+\end{lstlisting}
 
+The \code{'perf script'} command can help us to print out the trace data.
+It can output the details for the events produced by tracepoints. As the
+result, we obtain logs in the format below, which is same with ftrace's
+dumping format.
+
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true
+]
 perf script -i perf.data.dbg
               ls   10102 [000] 54342.677011:    probe:perf_aux_output_end_L31: (ffff8000802a0f2c) old_head=0x0 new_head=0xead30 size=0xead30
               ls   10102 [001] 54342.677796:    probe:perf_aux_output_end_L31: (ffff8000802a0f2c) old_head=0x0 new_head=0xbb90 size=0xbb90
@@ -1160,13 +1262,29 @@ perf script -i perf.data.dbg
             perf   10100 [001] 54342.701500: probe_perf:__auxtrace_mmap__read: (aaaad68236fc) head_off=0x1095f0 old_off=0x0 size=0x1095f0
 \end{lstlisting}
 
+Sometimes, we are curious about how a function is invoked in a flow. We can
+append the configuration 'call-graph=fp' for a tracepoint. When the
+tracepoint is recorded, its call graph will be captured as well. The perf
+command is updated for call stack tracing:
 
 \begin{lstlisting}[
   	language=sh,
 	breaklines=true
 ]
-perf record -o perf.data.dbg -e probe:perf_aux_output_end_L31/call-graph=fp/ -e probe_perf:__auxtrace_mmap__read/call-graph=fp/ -- perf record -o perf.data.etm -e cs_etm// -- ls
+perf record -o perf.data.dbg -e probe:perf_aux_output_end_L31/call-graph=fp/ \
+             -e probe_perf:__auxtrace_mmap__read/call-graph=fp/ -- \
+             perf record -o perf.data.etm -e cs_etm// -- ls
 \end{lstlisting}
+
+We can then use the \code{'perf script'} command to review the trace data
+again. This time, call chains of the traced functions are included. Since perf
+collects all objects, including the executables and libraries in the user
+space and the Linux image, it has the capability to parse symbols for the
+entire system. That's why, when reviewing the call chain of
+\code{perf\_aux\_output\_end()} in the log below, you can see that the call
+originates from the user space. The process \code{ls} then attempts to
+perform scheduling, and during the context switching out, the Arm CoreSight
+trace data is recorded.
 
 \begin{lstlisting}[
   	language=sh,
@@ -1216,6 +1334,8 @@ ls   10028 [003] 53664.368328:    probe:perf_aux_output_end_L31: (ffff8000802a0f
             ffff8800fd24 __libc_start_main+0xe4 (/usr/lib/aarch64-linux-gnu/libc-2.28.so)
             aaaacaa8584c [unknown] (/usr/bin/ls)
 
+...
+
 perf   10026 [001] 53664.385318: probe_perf:__auxtrace_mmap__read: (aaaae2d036fc) head_off=0x21fef0 old_off=0x0 size=0x21fef0
             aaaae2d036fc __auxtrace_mmap__read+0x1e8 (/mnt/linux-kernel/tools/perf/perf)
             aaaae2d03a44 auxtrace_mmap__read+0x48 (/mnt/linux-kernel/tools/perf/perf)
@@ -1233,5 +1353,8 @@ perf   10026 [001] 53664.385318: probe_perf:__auxtrace_mmap__read: (aaaae2d036fc
 
 
 \end{lstlisting}
+
+When you've reached at this point, I hope you now have a brief understanding
+of how to use perf for tracing and debugging. I'll stop here.
 
 \end{document}
