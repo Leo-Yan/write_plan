@@ -804,12 +804,10 @@ cat trace
 
 \section*{Using perf to debug perf}
 
-Things are not perfect. Kprobe and uprobe inherently require developers to
-acquire intense knowledge before using them.
-
-This is why we move eyes to the perf tool. The perf tool is capable of reading
-ELF files and annotating with source code. It provides a much more
-user-friendly way to set up a probe.
+Kprobe and uprobe inherently require developers to acquire intense knowledge
+before using them. Things are not perfect. This is why we move eyes to the
+perf tool. The perf tool is capable of reading ELF files and annotating with
+source code. It provides a much more user-friendly way to set up a probe.
 
 The command \code{'perf probe'} is for both kprobe and uprobe. The two
 options \code{'---line'} and \code{'---vars'} in the command are quite handy.
@@ -818,7 +816,7 @@ avaliable for tracing. After finalizing the traced address and variables, the
 option \code{'---add'} is used to add a probe. If the tracepoint is no longer
 needed, we can use the option \code{'---del'} to remove it.
 
-Let's replicate the experiment we have done.
+Let's see how to use perf to debug perf.
 
 \subsubsection*{Building binaries with debugging info}
 
@@ -860,13 +858,13 @@ make DEBUG=1 CORESIGHT=1
 \subsubsection*{Adding a probe in the kernel}
 
 To learn which source code lines in \code{perf\_aux\_output\_end()} are
-suitable for injecting a tracepoint, we can use the \code{'perf probe'}
-command with option \code{'---line'}.
+suitable for injecting a tracepoint, we can use option \code{'---line'} in the
+\code{'perf probe'} command.
 
-Perf needs the vmlinux file. If the vmlinux path is not offered by the option
-\code{'-k'} or \code{'---vmlinux'}, it is assumed to be placed in the same
-folder as the current working directory or in any of the predefined paths in
-the structure
+Perf needs the vmlinux file. The vmlinux path can be offered by the option
+\code{'-k'} or \code{'---vmlinux'}, if not, it is assumed to be placed in the
+same folder as the current working directory or in any of the predefined paths
+in the structure
 \href{https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/tools/perf/util/symbol.c?h=v6.8-rc1#n2246}{\code{vmlinux\_paths\_upd}}.
 The option \code{'-s'} followed by a path is used to specify the Linux kernel
 source, which should be consistent with the built kernel image, in below case,
@@ -991,18 +989,17 @@ You can now use it in all perf tools, such as:
 	perf record -e probe:perf_aux_output_end_L31 -aR sleep 1
 \end{lstlisting}
 
-The advantage of using perf is that it converts the readable expression to the
-probe syntax with raw addresses and registers, which can significantly
-reduce the difficulty of setting up probes.
+The advantage of perf is that it allows users to write readable expression and
+converts to the low-level probe syntax with raw addresses and registers. This
+can significantly reduce the difficulty of setting up probes.
 
 \subsubsection*{Adding a probe in the perf}
 
 The rest is to apply the same steps for adding a probe in the perf tool.
 
 Firstly, we display the source code lines for the
-\code{\_\_auxtrace\_mmap\_\_read()} function. Additionally, we need to specify
-path to the executable with the option \code{'-x'} or \code{'---exec'} for the
-user space program.
+\code{\_\_auxtrace\_mmap\_\_read()} function. To do this, We need to specify
+the traced executable with the option \code{'-x'} or \code{'---exec'}.
 
 \begin{lstlisting}[
   	language=sh,
@@ -1011,8 +1008,8 @@ user space program.
 perf probe -x /mnt/linux-kernel/tools/perf/perf --line "__auxtrace_mmap__read"
 \end{lstlisting}
 
-The dumping below shows that the size and heads calculation extends until line
-36, and line 38 would be a suitable location for injecting a probe.
+The dumping below shows that the size calculation extends until line 36, and
+line 38 would be a suitable location for injecting a probe.
 
 \begin{lstlisting}[
   	language=sh,
@@ -1065,31 +1062,15 @@ The dumping below shows that the size and heads calculation extends until line
          }
 \end{lstlisting}
 
-We also need to confirm which variables are accessible at the line 38 of the
-function with option \code{'---vars'}.
+We confirm which variables are accessible at the line 38 of the function with
+option \code{'---vars'}.
 
 \begin{lstlisting}[
   	language=sh,
 	breaklines=true
 ]
 perf probe -x /mnt/linux-kernel/tools/perf/perf --vars "__auxtrace_mmap__read:38"
-\end{lstlisting}
 
-It's a bit suprising that the tool dumps out two different offsets (one is
-\code{+488} and another is \code{+500}) for line 38, with the associated
-variables for each offset. Due to line 38 having multiple conditions compiled
-with multiple branch instructions, if we add probes for this line, perf will
-inject tracepoints for all relevant offsets.
-
-As a side topic, when you attempt to show variables for a probe point in an
-inline function, it's also possible to output multiple probe points. This is
-because an inline function can be compiled into different functions, the
-functions plus offset will be displayed in this case.
-
-\begin{lstlisting}[
-  	language=sh,
-	breaklines=true
-]
 Available variables at __auxtrace_mmap__read:38
         @<__auxtrace_mmap__read+488>
                 (unknown_type)  data1
@@ -1139,10 +1120,21 @@ Available variables at __auxtrace_mmap__read:38
                 unsigned char*  data
 \end{lstlisting}
 
+It's a bit suprising that the tool dumps out two different offsets (one is
+\code{+488} and another is \code{+500}) for line 38, with the associated
+variables for each offset. Due to line 38 having two conditions checking
+compiled with multiple branch instructions, adding a probe for this line will
+automatically inject tracepoints for all relevant offsets.
+
+As a side topic, when you attempt to show variables for a probe point in an
+inline function, it's also possible to output multiple probe points. This is
+because an inline function can be compiled into different functions, the
+functions plus offset will be displayed in this case.
+
 Instead of using \code{'function\_name:line\_number'}, we can use the format
-\code{'function\_name+offset'} to specify a more accurate probe point. Here,
-we select the offset \code{488} for tracing and dump the local variables
-\code{head\_off}, \code{old\_off} and \code{size}. The command is as: 
+\code{'function\_name+offset'} to specify an accurate probe point. Here,
+we select the offset \code{488} for tracing. Therefore, the adding probe
+command is:
 
 \begin{lstlisting}[
   	language=sh,
@@ -1159,9 +1151,8 @@ You can now use it in all perf tools, such as:
 
 \subsubsection*{Tracing with the perf}
 
-After using the perf tool to setup probes, now we need to check how to consume
-these tracepoints. Let's begin by reproducing the steps via the tracing file
-system.
+After setting up probes, now we need to consume these tracepoints. Let's begin
+by reproducing the steps via the tracing virtual file system.
 
 \begin{lstlisting}[
   	language=sh,
@@ -1207,30 +1198,30 @@ cat trace
             perf-4888    [002] DNZff 50585.857721: __auxtrace_mmap__read: (0xaaaab03279e0) head_off=0x219810 old_off=0x0 size=0x219810
 \end{lstlisting}
 
-Actually, after we enable the perf, it's no need to use ftrace knobs for the
-tracing. The perf tool can handle everything, including recording and
-reporting the trace data.
+In fact, with perf, it's no need to directly use ftrace knobs anymore. The
+perf tool can handle everything, including recording and reporting the trace
+data. We can use perf to debug perf!
 
-Using perf to debug perf involves two perf programs running. The first program
-is to open \code{cs\_etm} PMU event and record Arm CoreSight hardware
-trace data for program \code{ls}. The command is
+Using perf to debug perf involves two perf programs running. In the current
+case, the first perf program opens \code{cs\_etm} PMU event and records
+Arm CoreSight hardware trace data for program \code{ls}. The command is
 \code{'perf record -o perf.data.etm -e cs\_etm// --- ls'}. Note that
 \code{'---'} is a separator followed by a traced program and its arguments (if
 there are any).
 
-The second perf program opens the named probes and takes the first perf
-program as its target program. And use another separator \code{'---'}
-to divide the two perf programs.
+The second perf program is for debugging purpose. It opens the pre-configured
+probes and takes the first perf program as its debugging target. The two perf
+programs are separated by another separator \code{'---'}.
 
-By default, perf uses the name \code{'perf.data'} for a recording if a data file name
-is not given. But, if two perf recordings save their trace data into the same
-file, it can cause mess. Therefore, we specify distinct output file names
+By default, perf saves recording into the file \code{'perf.data'} if no file
+name is given. But, if two perf programs use the same file for saving trace
+data, it can cause mess. Therefore, we specify distinct output file names
 using the '-o' option for each perf program. One is \code{'perf.data.etm'} for
 the session related to the \code{cs\_etm} PMU event, and the another is
 \code{'perf.data.dbg'} for the debugging program.
 
-With the above explanation, writing the following command to use perf for
-debugging perf should not be difficult:
+With the above explanation, the following command kicks off the both perf
+programs in one go:
 
 \begin{lstlisting}[
   	language=sh,
@@ -1241,10 +1232,9 @@ perf record -o perf.data.dbg -e probe:perf_aux_output_end_L31 \
              perf record -o perf.data.etm -e cs_etm// -- ls
 \end{lstlisting}
 
-The \code{'perf script'} command can help us to print out the trace data.
-It can output the details for the events produced by tracepoints. As the
-result, we obtain logs in the format below, which is same with ftrace's
-dumping format.
+After recording, the \code{'perf script'} command can help us print out the
+trace data. It outputs the details for the events, as shown below, in the same
+format as ftrace dumping.
 
 \begin{lstlisting}[
   	language=sh,
@@ -1262,10 +1252,10 @@ perf script -i perf.data.dbg
             perf   10100 [001] 54342.701500: probe_perf:__auxtrace_mmap__read: (aaaad68236fc) head_off=0x1095f0 old_off=0x0 size=0x1095f0
 \end{lstlisting}
 
-Sometimes, we are curious about how a function is invoked in a flow. We can
-append the configuration 'call-graph=fp' for a tracepoint. When the
-tracepoint is recorded, its call graph will be captured as well. The perf
-command is updated for call stack tracing:
+Sometimes, we may be curious about how a function is invoked in a flow. We can
+append the configuration 'call-graph=fp' for a tracepoint in the recording.
+When the tracepoint is triggered, its call graph will be captured as well.
+The \code{perf record} command is updated for call stack tracing:
 
 \begin{lstlisting}[
   	language=sh,
@@ -1284,7 +1274,8 @@ entire system. That's why, when reviewing the call chain of
 \code{perf\_aux\_output\_end()} in the log below, you can see that the call
 originates from the user space. The process \code{ls} then attempts to
 perform scheduling, and during the context switching out, the Arm CoreSight
-trace data is recorded.
+trace data is recorded. This provides insights into the flow in the first
+perf program.
 
 \begin{lstlisting}[
   	language=sh,
@@ -1354,7 +1345,8 @@ perf   10026 [001] 53664.385318: probe_perf:__auxtrace_mmap__read: (aaaae2d036fc
 
 \end{lstlisting}
 
-When you've reached at this point, I hope you now have a brief understanding
-of how to use perf for tracing and debugging. I'll stop here.
+When you've read to this point, I hope you now have a brief understanding
+of how to use perf for tracing and debugging, and you might be interested
+in exploring more with perf, but I'll stop here ;)
 
 \end{document}
