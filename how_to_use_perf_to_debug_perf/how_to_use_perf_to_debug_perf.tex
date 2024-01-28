@@ -165,17 +165,18 @@ be pluasible in some situations, we need to explore other debugging measures.
 
 \subsection*{Debugging with ftrace}
 
-If we are looking for a better debugging tool with lower performance penalties
-and support for tracing in both user space and kernel space, ftrace appears as
-a promising candidate.
+If we are looking for a debugging tool with low performance penalties and
+support for tracing in both user space and kernel space, ftrace appears as a
+promising candidate:
 
-Firstly, ftrace uses a ring buffer to store trace data, allowing users to save
-the trace data into a file for testing and then perform post-analysis. This
-approach enables ftrace to avoid the tracing latency caused by console.
-
-Secondly, ftrace supports both kernel and user space tracing. The entire trace
+\begin{itemize}
+	\item Ftrace uses a ring buffer to store trace data, allowing users to save
+the trace data into a file for post-analysis. This approach helps avoid
+the tracing latency caused by console.
+	\item Ftrace supports both kernel and user space tracing. The entire trace
 data is recorded in a single file and displayed in a time-ordered format, thus
 the output result is friendly for review.
+\end{itemize}
 
 \subsubsection*{Printing in ftrace}
 
