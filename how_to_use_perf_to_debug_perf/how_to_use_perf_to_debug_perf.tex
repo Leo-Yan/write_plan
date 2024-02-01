@@ -134,22 +134,20 @@ int main(void)
 \end{lstlisting}
 
 The above code implicitly introduces a handy tracing tool: libc's
-\code{printf()}. Then, when starting to access the Linux kernel, its
-equivalent function \code{printk()} will no longer be strange.
+\code{printf()}. A printing log means an event has occurred, alongside
+variables can be printed out - this is perfect to act as tracing.
 
-A printing log means an event has occurred, alongside variables can be printed
-out - this is perfect to act as tracing.
+Then, when starting to access the Linux kernel, its
+equivalent function \code{printk()} will no longer be strange. \code{printk()}
+is reliable in most cases, it is a context-safe API. Even if a developer lacks
+knowledge of the difference within interrupt context, thread context and
+bottom-half context (e.g. in softirq or tasklet), \code{printk()} can work
+pretty well as a main debugging method.
 
-The printing is reliable in most cases. \code{printk()} is a context safe API
-- even if a developer has no knowledge for interrupt context, thread context
-and bottom-half context (e.g. in softirq or tasklet), printing still can work
-as a main debugging method.
-
-On the other hand, developers need to tolerate cons introduced by printing.
-If logs are output into the UART console, developers suffer performance
-penalty caused by the low speed of the UART port. In a worse case, the
-printing can alter program flow and might lead to the timing issues hardly to
-be reproduced.
+On the other hand, if \code{printk()} outputs logs to the UART console,
+developers suffer performance penalty caused by the low speed of the UART
+port. In a worse case, the printing can alter program flow and might lead to
+the timing issues hardly to be reproduced.
 
 It becomes challenging for using printing to debug a program which crosses
 both user space and kernel space. The reason is \code{printf()} and
@@ -601,7 +599,7 @@ with upper 4 bytes zeroed).
 
 At \code{0xffff8000802a0f14}, the instruction \code{"cbz w1, ffff8000802a0ffc"}
 compares the buffer mode. Now we are only interesed in the normal mode and
-\code{w1} is zero, as a result, the instruction  will jump to
+\code{w1} is zero in this case, as a result, the instruction  will jump to
 \code{0xffff8000802a0ffc}.
 
 From there, it sets the \code{handle->aux\_flags} and retrieves the old buffer
@@ -666,8 +664,8 @@ echo 'p:myprobe perf_aux_output_end+0x12c new_head=%x0:x64 \
 
 Similarly to kprobe, ftrace provides a sysfs node \code{uprobe\_events} for
 inserting a probe into a user space program. We can apply the methodology
-discussed in the previous section to analyze the disassembly of a program
-running in user space.
+discussed in the previous section to analyze the disassembly of the perf
+program.
 
 Firstly, generate the disassembly for the perf with the command:
 
