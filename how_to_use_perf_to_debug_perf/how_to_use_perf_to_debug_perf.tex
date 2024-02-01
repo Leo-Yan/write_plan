@@ -630,9 +630,9 @@ echo 'p:myprobe 0xffff8000802a100c new_head=%x0:x64 old_head=%x1:x64 size=%x2:x6
 In the command, \code{'p'} means to add a probe, and \code{'myprobe'} is the
 event name for the probe. The address \code{0xffff8000802a100c} is where the
 probe is inserted. The subsequent arguments are for dumping values. The option
-\code{'new\_head=\%x0:x64'} means an argument named as \code{'new\_head'},
-reading value from the register \code{x0} and printing as the 64-bit
-hexadecimal type \code{'x64'}. The later options follow the same format.
+\code{'new\_head=\%x0:x64'} means a value named as \code{'new\_head'}, reading
+from the register \code{x0} and printing as the 64-bit hexadecimal type
+\code{'x64'}. The later options follow the same format.
 
 Improving readability for the kprobe command is plausible. We can use the
 'function name + offset' format to replace an arbitrary address for
@@ -1275,8 +1275,8 @@ entire system. That's why, when reviewing the call chain of
 \code{perf\_aux\_output\_end()} in the log below, you can see that the call
 originates from the user space. The process \code{ls} then attempts to
 perform scheduling, and during the context switching out, the Arm CoreSight
-trace data is recorded. This provides insights into the flow in the first
-perf program.
+trace data is recorded. This provides insights into the execution flow with
+covering the kernel and user space.
 
 \begin{lstlisting}[
   	language=sh,
@@ -1364,7 +1364,7 @@ insights I learned in my conversations with Daniel.
 
 I also appreciate Mathieu Poirier for providing help when I submitted my first
 patch to Arm CoreSight. Mathieu encouraged me to keep going and explore more
-development in integration Arm CoreSight with perf. This led me to have much
-fun in perf!
+development in integrating Arm CoreSight with perf. This led me to the perf
+development, where I find much fun!
 
 \end{document}
