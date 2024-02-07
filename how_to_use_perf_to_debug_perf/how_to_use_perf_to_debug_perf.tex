@@ -16,6 +16,7 @@
 \documentclass[11pt]{diazessay} % Font size (can be 10pt, 11pt or 12pt)
 
 \usepackage{listings}
+\usepackage{caption}
 \usepackage{tikz}
 \usepackage{hyperref}
 \usetikzlibrary{positioning}
@@ -37,6 +38,12 @@
   breakatwhitespace=false,
   tabsize=3
 }
+
+\DeclareCaptionFormat{listing}{\rule{\dimexpr\textwidth}{0.4pt}\par\vskip1pt#1#2#3}
+\captionsetup{labelfont=bf}
+\captionsetup{hangindent=20pt}
+\captionsetup[lstlisting]{font=small,labelsep=colon}
+\captionsetup[lstlisting]{format=listing,singlelinecheck=false}
 
 % Defines a `datastore' shape for use in DFDs.  This inherits from a
 % rectangle and only draws two horizontal lines.
@@ -124,7 +131,9 @@ debugging. The content will be divided into four sections:
 Usually, a beginner studying C programming learns the first code piece is for
 printing the string 'hello world!'.
 
-\begin{lstlisting}
+\begin{lstlisting}[
+	caption="Hello world!" program in C
+]
 #include <stdio.h>
 int main(void)
 {
@@ -195,7 +204,9 @@ spanning the two spaces. The kernel documentation
 into the \code{trace\_marker} node in C code. The code below is slightly
 tweaked for easier calling.
 
-\begin{lstlisting}
+\begin{lstlisting}[
+	caption=Function for writing user space events into ftrace
+]
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -249,7 +260,9 @@ to the old head.
 We add tracing code in lines 500 and 501 to print the old head, the new head
 and the size into ftrace.
 
-\begin{lstlisting}
+\begin{lstlisting}[
+	caption=The code piece of perf\_aux\_output\_end()
+]
 481 void perf_aux_output_end(struct perf_output_handle *handle, unsigned long size)
 482 {
 483         bool wakeup = !!(handle->aux_flags & PERF_AUX_FLAG_TRUNCATED);
@@ -288,7 +301,9 @@ them with kernel logs together.  This is why the \code{trace\_write()}
 function at line 1882 is added to write logs into the ftrace buffer via the
 \code{trace\_maker} interface.
 
-\begin{lstlisting}
+\begin{lstlisting}[
+	caption=The code piece of \_\_auxtrace\_mmap\_\_read()
+]
 1844 static int __auxtrace_mmap__read(struct mmap *map,
 1845                                  struct auxtrace_record *itr,
 1846                                  struct perf_tool *tool, process_auxtrace_t fn,
@@ -341,7 +356,8 @@ several commands:
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Initialization ftrace
 ]
 # Stop tracing
 echo 0 > /sys/kernel/debug/tracing/tracing_on
@@ -355,7 +371,11 @@ echo 1 > /sys/kernel/debug/tracing/tracing_on
 
 Then, run the test and stop tracing:
 
-\begin{lstlisting}
+\begin{lstlisting}[
+  	language=sh,
+	breaklines=true,
+	caption=Run test and stop tracing
+]
 # Run test
 perf record -e cs_etm// -- ls
 
@@ -367,9 +387,9 @@ At last, you can dump tracing log:
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Dump ftrace tracing
 ]
-# Dump tracing data
 cat /sys/kernel/debug/tracing/trace
 
 # tracer: nop
@@ -421,7 +441,8 @@ understand scheduling behaviours. By enabling the tracepoints, we get logs:
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Combining printing and sched tracepoints in ftrace
 ]
 # Enable scheduler tracepoints
 echo 1 > /sys/kernel/debug/tracing/events/sched/enable
@@ -513,7 +534,8 @@ code with assembly instructions.
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Dumping disassembly for the kernel image
 ]
 aarch64-linux-gnu-objdump -S -d vmlinux > kernel.objdump
 \end{lstlisting}
@@ -527,7 +549,8 @@ knowledge, let’s take a closer look at the disassembly of the
 \code{perf\_aux\_output\_end()} function.
 
 \begin{lstlisting}[
-	breaklines=true
+	breaklines=true,
+	caption=Disassembly of perf\_aux\_output\_end()
 ]
 ffff8000802a0ee0 <perf_aux_output_end>:
 ffff8000802a0ee0:	d503201f 	nop
@@ -618,7 +641,8 @@ want to dump. To achieve this, we can add a probe with the following command:
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Adding a kprobe with raw address and registers
 ]
 cd /sys/kernel/debug/tracing/
 echo 'p:myprobe 0xffff8000802a100c new_head=%x0:x64 old_head=%x1:x64 size=%x2:x64' \
@@ -639,7 +663,8 @@ address alterations caused by a rebuild:
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Adding a kprobe with 'function\_name+offset'
 ]
 echo 'p:myprobe perf_aux_output_end+0x12c new_head=%x0:x64 \
        old_head=%x1:x64 size=%x2:x64' > kprobe_events
@@ -654,7 +679,8 @@ for the same purpose. Thus, the command can be updated as:
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Adding a kprobe with the variable format '+off(\%reg)'
 ]
 echo 'p:myprobe perf_aux_output_end+0x12c new_head=%x0:x64 \
        old_head=+144(%x20):x64 size=%x2:x64' > kprobe_events
@@ -671,7 +697,8 @@ Firstly, generate the disassembly for the perf with the command:
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Generating disassembly for the perf program
 ]
 aarch64-linux-gnu-objdump -S -d perf > perf.objdump
 \end{lstlisting}
@@ -680,7 +707,8 @@ In the dump file, we can get the disasembly for \code{\_\_auxtrace\_mmap\_\_read
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Disassembly of \_\_auxtrace\_mmap\_\_read()
 ]
 00000000002077f8 <__auxtrace_mmap__read>:
 
@@ -738,7 +766,8 @@ Consequently, we can use the command to inject a user probe:
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Adding a uprobe in the perf program
 ]
 echo 'p /mnt/linux-kernel/tools/perf/perf:0x2079e0 \
        old_off=+128(%sp):x64 head_off=+120(%sp):x64 size=+112(%sp):x64' > uprobe_events
@@ -749,7 +778,8 @@ re-run the test and capture the trace log.
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Tracing with probes
 ]
 # Change to tracing folder
 cd /sys/kernel/debug/tracing/
@@ -759,7 +789,7 @@ echo 'p:myprobe perf_aux_output_end+0x12c new_head=%x0:x64 \
        old_head=+144(%x20):x64 size=%x2:x64' > kprobe_events
 
 # Enable the kprobe tracepoint
-echo 1 > events/kprobes/myprobe1/enable
+echo 1 > events/kprobes/myprobe/enable
 
 # Add user space probe
 echo 'p /mnt/linux-kernel/tools/perf/perf:0x2079e0 \
@@ -792,12 +822,12 @@ cat trace
 #                              |||| /     delay
 #           TASK-PID     CPU#  |||||  TIMESTAMP  FUNCTION
 #              | |         |   |||||     |         |
-              ls-3480    [005] d..3. 13312.444215: myprobe1: (perf_aux_output_end+0x12c/0x138) new_head=0xd71f0 old_head=0x0 size=0xd71f0
-              ls-3480    [005] d..3. 13312.444779: myprobe1: (perf_aux_output_end+0x12c/0x138) new_head=0xe22a0 old_head=0xd71f0 size=0xb0b0
-              ls-3480    [005] d..3. 13312.446907: myprobe1: (perf_aux_output_end+0x12c/0x138) new_head=0xf2950 old_head=0xe22a0 size=0x106b0
-              ls-3480    [005] d..3. 13312.449854: myprobe1: (perf_aux_output_end+0x12c/0x138) new_head=0x10e470 old_head=0xf2950 size=0x1bb20
-              ls-3480    [005] d..3. 13312.456476: myprobe1: (perf_aux_output_end+0x12c/0x138) new_head=0x1ac6e0 old_head=0x10e470 size=0x9e270
-              ls-3480    [005] d..1. 13312.460459: myprobe1: (perf_aux_output_end+0x12c/0x138) new_head=0x243560 old_head=0x1ac6e0 size=0x96e80
+              ls-3480    [005] d..3. 13312.444215: myprobe: (perf_aux_output_end+0x12c/0x138) new_head=0xd71f0 old_head=0x0 size=0xd71f0
+              ls-3480    [005] d..3. 13312.444779: myprobe: (perf_aux_output_end+0x12c/0x138) new_head=0xe22a0 old_head=0xd71f0 size=0xb0b0
+              ls-3480    [005] d..3. 13312.446907: myprobe: (perf_aux_output_end+0x12c/0x138) new_head=0xf2950 old_head=0xe22a0 size=0x106b0
+              ls-3480    [005] d..3. 13312.449854: myprobe: (perf_aux_output_end+0x12c/0x138) new_head=0x10e470 old_head=0xf2950 size=0x1bb20
+              ls-3480    [005] d..3. 13312.456476: myprobe: (perf_aux_output_end+0x12c/0x138) new_head=0x1ac6e0 old_head=0x10e470 size=0x9e270
+              ls-3480    [005] d..1. 13312.460459: myprobe: (perf_aux_output_end+0x12c/0x138) new_head=0x243560 old_head=0x1ac6e0 size=0x96e80
             perf-3479    [002] DNZff 13312.460598: p_perf_0x2079e0: (0xaaaad0f979e0) old_off=0x0 head_off=0x243560 size=0x243560
 \end{lstlisting}
 
@@ -832,7 +862,8 @@ disabled to avoid stripping debugging information from the \code{vmlinux}.
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Building Linux kernel with debugging info
 ]
 cd /path/to/kernel/
 ./scripts/config -e CONFIG_DEBUG_INFO
@@ -848,7 +879,8 @@ for support Arm CoreSight decoder in the tool.
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Building perf with debugging info
 ]
 cd /path/to/kernel/tools/perf
 make DEBUG=1 CORESIGHT=1
@@ -871,7 +903,8 @@ the kernel source folder is \code{'/mnt/linux-kernel/'}.
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Perf command to show probe lines in perf\_aux\_output\_end()
 ]
 perf probe --line "perf_aux_output_end" -k ./vmlinux -s /mnt/linux-kernel/
 \end{lstlisting}
@@ -880,7 +913,8 @@ As result, we can get output:
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Annotation for probe lines of perf\_aux\_output\_end()
 ]
 <perf_aux_output_end@.///kernel/events/ring_buffer.c:0>
       0  void perf_aux_output_end(struct perf_output_handle *handle, unsigned long size)
@@ -947,7 +981,8 @@ source code line with format \code{'function\_name:line\_number'}:
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Perf command to show probe variables in perf\_aux\_output\_end()
 ]
 perf probe --vars "perf_aux_output_end:31" -s /mnt/linux-kernel/
 \end{lstlisting}
@@ -961,7 +996,8 @@ presents the filled size.
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Annotation for probe variables of perf\_aux\_output\_end()
 ]
 Available variables at perf_aux_output_end:31
         @<perf_aux_output_end+68>
@@ -976,7 +1012,8 @@ Now, use the option \code{'---add'} to add a probe in the kernel.
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Adding probe in perf\_aux\_output\_end() with 'perf probe'
 ]
 perf probe --add "perf_aux_output_end:31 old_head=aux_head \
                     new_head=rb->aux_head:x64 size=size:x64" -s /mnt/linux-kernel/
@@ -1002,7 +1039,8 @@ the traced executable with the option \code{'-x'} or \code{'---exec'}.
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Perf command to show probe lines in \_\_auxtrace\_mmap\_\_read()
 ]
 perf probe -x /mnt/linux-kernel/tools/perf/perf --line "__auxtrace_mmap__read"
 \end{lstlisting}
@@ -1012,7 +1050,8 @@ line 38 would be a suitable location for injecting a probe.
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Annotation for probe lines of \_\_auxtrace\_mmap\_\_read()
 ]
 <__auxtrace_mmap__read@/mnt/linux-kernel/tools/perf/util/auxtrace.c:0>
       0  static int __auxtrace_mmap__read(struct mmap *map,
@@ -1066,7 +1105,8 @@ option \code{'---vars'}.
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Annotation for probe variables of \_\_auxtrace\_mmap\_\_read()
 ]
 perf probe -x /mnt/linux-kernel/tools/perf/perf --vars "__auxtrace_mmap__read:38"
 
@@ -1137,7 +1177,8 @@ command is:
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Adding probe in \_\_auxtrace\_mmap\_\_read() with 'perf probe'
 ]
 perf probe -x /mnt/linux-kernel/tools/perf/perf --add "__auxtrace_mmap__read+488 head_off=head_off old_off=old_off size=size"
 Added new event:
@@ -1155,7 +1196,8 @@ by reproducing the steps via the tracing virtual file system.
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Tracing with 'perf probe'
 ]
 # Change to tracing folder
 cd /sys/kernel/debug/tracing/
@@ -1224,7 +1266,8 @@ programs in one go:
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Perf command for tracing another perf program
 ]
 perf record -o perf.data.dbg -e probe:perf_aux_output_end_L31 \
              -e probe_perf:__auxtrace_mmap__read -- \
@@ -1237,7 +1280,8 @@ format as ftrace dumping.
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Report tracing logs with 'perf script'
 ]
 perf script -i perf.data.dbg
               ls   10102 [000] 54342.677011:    probe:perf_aux_output_end_L31: (ffff8000802a0f2c) old_head=0x0 new_head=0xead30 size=0xead30
@@ -1258,7 +1302,8 @@ The \code{perf record} command is updated for call stack tracing:
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Perf record with tracing call stack
 ]
 perf record -o perf.data.dbg -e probe:perf_aux_output_end_L31/call-graph=fp/ \
              -e probe_perf:__auxtrace_mmap__read/call-graph=fp/ -- \
@@ -1278,7 +1323,8 @@ covering the kernel and user space.
 
 \begin{lstlisting}[
   	language=sh,
-	breaklines=true
+	breaklines=true,
+	caption=Perf tracing logs with call stack
 ]
 perf script -i perf.data.dbg
 
